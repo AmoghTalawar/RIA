@@ -1,0 +1,10 @@
+node_modules
+dist
+.env
+.vite
+package-lock.json
+*.log
+.eslintcache
+.DS_Store
+.claude/
+src/data/rawPublications.json

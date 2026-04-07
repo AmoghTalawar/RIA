@@ -1,0 +1,739 @@
+{
+  "universityKPIs": {
+    "totalPubs": {
+      "value": 6516,
+      "delta": -84
+    },
+    "univHIndex": {
+      "value": 55.0,
+      "delta": 0
+    },
+    "totalCitations": {
+      "value": 80520.0,
+      "delta": 0
+    },
+    "q1Percent": {
+      "value": 17,
+      "delta": 0
+    },
+    "campusSplit": {
+      "bvb": 100,
+      "belagavi": 0,
+      "bengaluru": 0
+    },
+    "yoyGrowth": {
+      "value": -84
+    },
+    "srgDensity": {
+      "value": 69.8,
+      "unit": "%"
+    },
+    "cagr5y": {
+      "value": -23.5
+    }
+  },
+  "universityTargets": {
+    "publications": {
+      "current": 6516,
+      "target": 7494,
+      "period": "FY 2025-26"
+    },
+    "citations": {
+      "current": 80520.0,
+      "target": 92598,
+      "period": "FY 2025-26"
+    },
+    "hIndex": {
+      "current": 55.0,
+      "target": 61,
+      "period": "FY 2025-26"
+    },
+    "q1Percent": {
+      "current": 17,
+      "target": 50,
+      "period": "FY 2025-26"
+    },
+    "fundingCrore": {
+      "current": 15.4,
+      "target": 20,
+      "period": "FY 2025-26"
+    },
+    "nirfRank": {
+      "current": 98,
+      "target": 75,
+      "period": "2026",
+      "invert": true
+    },
+    "patents": {
+      "current": 18,
+      "target": 25,
+      "period": "FY 2025-26"
+    },
+    "phdCompletions": {
+      "current": 14,
+      "target": 20,
+      "period": "FY 2025-26"
+    }
+  },
+  "universityQRankDistribution": [
+    {
+      "name": "Q1",
+      "value": 1127
+    },
+    {
+      "name": "Q2",
+      "value": 643
+    },
+    {
+      "name": "Q3",
+      "value": 737
+    },
+    {
+      "name": "Q4",
+      "value": 888
+    },
+    {
+      "name": "Unranked",
+      "value": 3121
+    }
+  ],
+  "topUniversityFaculty": [
+    {
+      "name": "Tejraj Malleshappa Aminabhavi",
+      "value": 9981.0,
+      "campus": "BVB",
+      "department": "Chemistry"
+    },
+    {
+      "name": "Nagaraj Shetti P",
+      "value": 6651.0,
+      "campus": "BVB",
+      "department": "Centre for Engineering Education and Research (CEER)"
+    },
+    {
+      "name": "Gaitonde V N",
+      "value": 5302.0,
+      "campus": "BVB",
+      "department": "Mechanical Engineering"
+    },
+    {
+      "name": "Karnik S R",
+      "value": 3025.0,
+      "campus": "BVB",
+      "department": "Electrical and Electronics Engineering"
+    },
+    {
+      "name": "Sharanabasava V Ganachari",
+      "value": 2085.0,
+      "campus": "BVB",
+      "department": "Centre for Material Science (CMS)"
+    },
+    {
+      "name": "Shweta J. Malode",
+      "value": 1959.0,
+      "campus": "BVB",
+      "department": "Chemistry"
+    },
+    {
+      "name": "Narasimha Hanamant Ayachit",
+      "value": 1700.0,
+      "campus": "BVB",
+      "department": "Physics"
+    },
+    {
+      "name": "Tewari P G",
+      "value": 1475.0,
+      "campus": "BVB",
+      "department": "Mechanical Engineering"
+    },
+    {
+      "name": "Narayan D G",
+      "value": 1419.0,
+      "campus": "BVB",
+      "department": "Computer Science and Engineering"
+    },
+    {
+      "name": "Patil N R",
+      "value": 1395.0,
+      "campus": "BVB",
+      "department": "Physics"
+    }
+  ],
+  "campusData": [
+    {
+      "name": "BVB Hubli",
+      "actual": 6516,
+      "target": 7168,
+      "color": "#B91C1C"
+    },
+    {
+      "name": "Belagavi",
+      "actual": 0,
+      "target": 0,
+      "color": "#3730A3"
+    },
+    {
+      "name": "Bengaluru",
+      "actual": 0,
+      "target": 0,
+      "color": "#0F766E"
+    }
+  ],
+  "campusFacultyHeatmapData": [
+    {
+      "facultyBoard": "Chemistry",
+      "BVB Hubli": 741.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "facultyBoard": "Mechanical Engineering",
+      "BVB Hubli": 1058.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "facultyBoard": "Computer Science and Engi",
+      "BVB Hubli": 1760.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "facultyBoard": "Centres",
+      "BVB Hubli": 467.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "facultyBoard": "Sheshgiri College of Engi",
+      "BVB Hubli": 1328.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "facultyBoard": "Electronics and Communica",
+      "BVB Hubli": 1787.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "facultyBoard": "Physics",
+      "BVB Hubli": 395.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "facultyBoard": "Biotechnology",
+      "BVB Hubli": 548.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "facultyBoard": "Electrical and Electronic",
+      "BVB Hubli": 534.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "facultyBoard": "Master of Computer Applic",
+      "BVB Hubli": 286.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "facultyBoard": "Mathematics",
+      "BVB Hubli": 212.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "facultyBoard": "Civil Engineering",
+      "BVB Hubli": 320.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "facultyBoard": "Sciences",
+      "BVB Hubli": 28.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "facultyBoard": "Automation and Robotics",
+      "BVB Hubli": 178.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "facultyBoard": "Management Studies and Re",
+      "BVB Hubli": 74.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "facultyBoard": "Humanities",
+      "BVB Hubli": 30.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "facultyBoard": "Architecture",
+      "BVB Hubli": 25.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "facultyBoard": "KLE Law College",
+      "BVB Hubli": 10.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    }
+  ],
+  "universityResearchLandscape": [
+    {
+      "name": "Chemistry",
+      "campus": "BVB",
+      "pubs": 741.0,
+      "citations": 15954.0,
+      "faculty": 20.0,
+      "hIndex": 10.4
+    },
+    {
+      "name": "Mechanical Engineeri",
+      "campus": "BVB",
+      "pubs": 1058.0,
+      "citations": 11702.0,
+      "faculty": 60.0,
+      "hIndex": 3.9
+    },
+    {
+      "name": "Computer Science and",
+      "campus": "BVB",
+      "pubs": 1760.0,
+      "citations": 10648.0,
+      "faculty": 105.0,
+      "hIndex": 3.2
+    },
+    {
+      "name": "Centres",
+      "campus": "BVB",
+      "pubs": 467.0,
+      "citations": 10584.0,
+      "faculty": 25.0,
+      "hIndex": 5.0
+    },
+    {
+      "name": "Sheshgiri College of",
+      "campus": "BVB",
+      "pubs": 1328.0,
+      "citations": 6377.0,
+      "faculty": 150.0,
+      "hIndex": 1.9
+    },
+    {
+      "name": "Electronics and Comm",
+      "campus": "BVB",
+      "pubs": 1787.0,
+      "citations": 6161.0,
+      "faculty": 77.0,
+      "hIndex": 3.1
+    },
+    {
+      "name": "Physics",
+      "campus": "BVB",
+      "pubs": 395.0,
+      "citations": 4802.0,
+      "faculty": 16.0,
+      "hIndex": 7.1
+    },
+    {
+      "name": "Biotechnology",
+      "campus": "BVB",
+      "pubs": 548.0,
+      "citations": 4425.0,
+      "faculty": 16.0,
+      "hIndex": 7.2
+    },
+    {
+      "name": "Electrical and Elect",
+      "campus": "BVB",
+      "pubs": 534.0,
+      "citations": 4045.0,
+      "faculty": 36.0,
+      "hIndex": 2.8
+    },
+    {
+      "name": "Master of Computer A",
+      "campus": "BVB",
+      "pubs": 286.0,
+      "citations": 1531.0,
+      "faculty": 14.0,
+      "hIndex": 3.4
+    },
+    {
+      "name": "Mathematics",
+      "campus": "BVB",
+      "pubs": 212.0,
+      "citations": 1447.0,
+      "faculty": 25.0,
+      "hIndex": 2.0
+    },
+    {
+      "name": "Civil Engineering",
+      "campus": "BVB",
+      "pubs": 320.0,
+      "citations": 1224.0,
+      "faculty": 42.0,
+      "hIndex": 1.6
+    },
+    {
+      "name": "Sciences",
+      "campus": "BVB",
+      "pubs": 28.0,
+      "citations": 803.0,
+      "faculty": 1.0,
+      "hIndex": 15.0
+    },
+    {
+      "name": "Automation and Robot",
+      "campus": "BVB",
+      "pubs": 178.0,
+      "citations": 653.0,
+      "faculty": 22.0,
+      "hIndex": 2.0
+    },
+    {
+      "name": "Management Studies a",
+      "campus": "BVB",
+      "pubs": 74.0,
+      "citations": 92.0,
+      "faculty": 22.0,
+      "hIndex": 0.5
+    },
+    {
+      "name": "Humanities",
+      "campus": "BVB",
+      "pubs": 30.0,
+      "citations": 54.0,
+      "faculty": 6.0,
+      "hIndex": 1.2
+    },
+    {
+      "name": "Architecture",
+      "campus": "BVB",
+      "pubs": 25.0,
+      "citations": 18.0,
+      "faculty": 31.0,
+      "hIndex": 0.1
+    },
+    {
+      "name": "KLE Law College",
+      "campus": "BVB",
+      "pubs": 10.0,
+      "citations": 0.0,
+      "faculty": 71.0,
+      "hIndex": 0.0
+    }
+  ],
+  "universityHIndexTrend": [
+    {
+      "year": "2019",
+      "BVB": 1.9,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "year": "2020",
+      "BVB": 2.0,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "year": "2021",
+      "BVB": 2.1,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "year": "2022",
+      "BVB": 2.2,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "year": "2023",
+      "BVB": 2.4,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "year": "2024",
+      "BVB": 2.5,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "year": "2025",
+      "BVB": 2.6,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "year": "2026",
+      "BVB": 2.7,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    }
+  ],
+  "campusTrend": [
+    {
+      "year": "2019",
+      "BVB": 299,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "year": "2020",
+      "BVB": 462,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "year": "2021",
+      "BVB": 588,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "year": "2022",
+      "BVB": 603,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "year": "2023",
+      "BVB": 690,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "year": "2024",
+      "BVB": 858,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "year": "2025",
+      "BVB": 939,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    },
+    {
+      "year": "2026",
+      "BVB": 154,
+      "Belagavi": 0,
+      "Bengaluru": 0
+    }
+  ],
+  "universityArticleTypes": [
+    {
+      "name": "Journals",
+      "value": 3764,
+      "color": "#0F766E"
+    },
+    {
+      "name": "Conference",
+      "value": 2357,
+      "color": "#B91C1C"
+    },
+    {
+      "name": "Book Chapter",
+      "value": 300,
+      "color": "#3730A3"
+    },
+    {
+      "name": "PrePrint",
+      "value": 94,
+      "color": "#B45309"
+    },
+    {
+      "name": "Other",
+      "value": 1,
+      "color": "#6D28D9"
+    }
+  ],
+  "nirfTrajectory": [
+    {
+      "year": "2020",
+      "rank": 185,
+      "score": 42.3,
+      "band": "B"
+    },
+    {
+      "year": "2021",
+      "rank": 162,
+      "score": 45.8,
+      "band": "B"
+    },
+    {
+      "year": "2022",
+      "rank": 148,
+      "score": 48.2,
+      "band": "B"
+    },
+    {
+      "year": "2023",
+      "rank": 128,
+      "score": 52.1,
+      "band": "A"
+    },
+    {
+      "year": "2024",
+      "rank": 112,
+      "score": 55.8,
+      "band": "A"
+    },
+    {
+      "year": "2025",
+      "rank": 98,
+      "score": 58.4,
+      "band": "A"
+    }
+  ],
+  "universityFundingPortfolio": [
+    {
+      "name": "DST",
+      "value": 4.2,
+      "projects": 12
+    },
+    {
+      "name": "AICTE",
+      "value": 2.8,
+      "projects": 8
+    },
+    {
+      "name": "UGC",
+      "value": 1.5,
+      "projects": 5
+    },
+    {
+      "name": "Industry",
+      "value": 3.6,
+      "projects": 15
+    },
+    {
+      "name": "CSIR",
+      "value": 1.2,
+      "projects": 4
+    },
+    {
+      "name": "International",
+      "value": 2.1,
+      "projects": 6
+    }
+  ],
+  "universityPhDPipeline": {
+    "total": 185,
+    "stages": [
+      {
+        "stage": "Coursework",
+        "count": 32,
+        "color": "#3730A3"
+      },
+      {
+        "stage": "Comprehensive Exam",
+        "count": 28,
+        "color": "#0F766E"
+      },
+      {
+        "stage": "Proposal Defence",
+        "count": 25,
+        "color": "#B45309"
+      },
+      {
+        "stage": "Research Phase",
+        "count": 62,
+        "color": "#B91C1C"
+      },
+      {
+        "stage": "Pre-submission",
+        "count": 22,
+        "color": "#15803D"
+      },
+      {
+        "stage": "Thesis Submitted",
+        "count": 16,
+        "color": "#6D28D9"
+      }
+    ],
+    "completedThisYear": 14,
+    "avgDuration": 4.8,
+    "onTrack": 128,
+    "delayed": 42,
+    "critical": 15
+  },
+  "peerComparison": [
+    {
+      "name": "KLE Tech",
+      "publications": 6516,
+      "citations": 80520.0,
+      "hIndex": 55.0,
+      "q1Percent": 17,
+      "patents": 18
+    },
+    {
+      "name": "NITK Surathkal",
+      "publications": 1580,
+      "citations": 62000,
+      "hIndex": 52,
+      "q1Percent": 48,
+      "patents": 24
+    },
+    {
+      "name": "BMS College",
+      "publications": 920,
+      "citations": 35200,
+      "hIndex": 38,
+      "q1Percent": 35,
+      "patents": 12
+    },
+    {
+      "name": "SDM College",
+      "publications": 680,
+      "citations": 22800,
+      "hIndex": 32,
+      "q1Percent": 28,
+      "patents": 8
+    },
+    {
+      "name": "RVCE",
+      "publications": 1120,
+      "citations": 42600,
+      "hIndex": 42,
+      "q1Percent": 40,
+      "patents": 15
+    }
+  ],
+  "publicationsByYearSummary": {
+    "2026": 154,
+    "2025": 939,
+    "2024": 858,
+    "2023": 690,
+    "2022": 603,
+    "2021": 588,
+    "2020": 462,
+    "2019": 299,
+    "2018": 315
+  },
+  "availableYears": [
+    2018,
+    2019,
+    2020,
+    2021,
+    2022,
+    2023,
+    2024,
+    2025,
+    2026
+  ]
+}

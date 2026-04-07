@@ -1,0 +1,1082 @@
+
+
+KLE TECHNOLOGICAL UNIVERSITY
+
+Hubballi, Karnataka
+
+
+
+RESEARCH INTELLIGENCE AGENT
+
+
+
+System Specification & Architecture Document
+
+
+
+Multi-Level Research Analytics, Monitoring &
+
+Strategic Intelligence Platform
+
+
+
+University  ▸  Campus  ▸  Department  ▸  Faculty
+
+Hierarchical intelligence serving every leadership layer
+
+
+
+Version:
+
+2.0
+
+Date:
+
+February 2026
+
+Status:
+
+Specification Draft
+
+
+
+
+
+
+
+
+
+1. Executive Summary
+
+The Research Intelligence Agent (RIA) is an autonomous, AI-powered system designed to provide KLE Technological University’s leadership at every organizational level with continuous visibility into research performance, progress, and strategic positioning. The system serves the Vice Chancellor and university leadership, campus directors, deans, department heads, and individual faculty members — each seeing precisely the insights relevant to their scope of responsibility.
+
+The RIA eliminates manual report generation, removes dependency on individuals for data compilation, and enables evidence-based decision-making at every tier of the institution. Data flows upward from individual faculty research activity, aggregating automatically through departments, campuses, and the university — while strategic targets cascade downward from institutional goals to campus and department-level expectations.
+
+
+
+Core Design Principle
+
+The system runs autonomously without depending on any single individual. All data acquisition, processing, analysis, and reporting are automated. Every leadership layer — from the Vice Chancellor to individual faculty — accesses insights calibrated to their role and decision-making scope. Metrics roll up from faculty to department to campus to university; targets cascade down from university to campus to department.
+
+
+
+1.1 Multi-Level Intelligence Hierarchy
+
+The system serves four distinct organizational levels, each with tailored analytics, insights, and query capabilities:
+
+Level
+
+Users
+
+Primary Focus
+
+Key Questions Answered
+
+University
+
+Vice Chancellor, Pro-VC, Registrar, Board Members
+
+Institutional research health, NIRF positioning, total funding portfolio, strategic direction, peer benchmarking
+
+"How does KLE Tech rank among peers? Are we on track for NIRF targets? Where should we invest next?"
+
+Campus
+
+Campus Directors, Campus Principals
+
+Campus-level aggregate performance, inter-campus comparison, campus-specific strengths and gaps
+
+"How is this campus performing vs others? Which departments here need support? What are our campus strengths?"
+
+Department
+
+HoDs, Research Centre Heads, Deans
+
+Department detail: every faculty member’s output, journal quality, funded projects, PhD pipeline, inter-department ranking
+
+"Who is publishing in Q1 journals? Are our PhD scholars on track? How do we compare with peer departments?"
+
+Faculty
+
+Individual Researchers
+
+Personal research profile, publication trajectory, citation impact, h-index, active projects, self-assessment against department averages
+
+"How is my citation count trending? How do I compare with my department average? What is my h-index trajectory?"
+
+
+
+This hierarchical design ensures that every person in the research ecosystem — from the Vice Chancellor making strategic investment decisions to an individual faculty member tracking their own growth — gets precisely the intelligence they need, at the granularity that is actionable for them.
+
+
+
+2. Scope & Boundaries
+
+2.1 Research Domains
+
+The RIA monitors five research domains, with metrics available at every organizational level:
+
+Domain
+
+Coverage
+
+Key Metrics (at each level)
+
+Publications & Citations
+
+All research publications by KLE Tech faculty indexed in Scopus, Web of Science, and Google Scholar
+
+Publication count, citation count, h-index, journal quartile distribution (Q1–Q4), growth rates, collaborative publication percentage
+
+Funded Research
+
+Externally and internally funded projects, consultancy, and industry-sponsored research
+
+Active projects, funding secured, completion rates, agency-wise distribution, funding per faculty
+
+Intellectual Property
+
+Patents, copyrights, design registrations, technology transfers
+
+Filed vs granted, domain classification, commercialization status
+
+Doctoral Program
+
+PhD scholar enrollment, milestones, completion, scholarly output
+
+Active scholars, completion rate, time-to-degree, publications per scholar, supervisor load
+
+Research Collaborations
+
+Inter-institutional, international, and industry partnerships
+
+Co-authored publications, active MoUs with outcomes, joint funded projects
+
+
+
+2.2 Organizational Scope
+
+The system covers the complete KLE Technological University organizational structure: all campuses, all departments within each campus, and all faculty members. The data model inherently supports the hierarchical roll-up: every publication, project, patent, and PhD record is tagged to a specific faculty member, who belongs to a department, which belongs to a campus. Aggregation happens automatically at each level.
+
+2.3 Out of Scope
+
+Excluded from the current version: teaching metrics, administrative and HR data, financial operations beyond research expenditure, student placement data, and infrastructure management.
+
+
+
+3. System Architecture
+
+The RIA is a four-layer modular system with a hierarchical data model at its core. Every metric is stored at the finest granularity (individual faculty/publication/project) and aggregated upward on demand.
+
+3.1 Layer 1 — Data Acquisition
+
+3.1.1 External Data Sources
+
+Source
+
+Data Provided
+
+Access Method
+
+Refresh
+
+Scopus (Elsevier)
+
+Publications, citations, h-index, journal metrics, co-author networks, affiliation data
+
+REST API (institutional key)
+
+Weekly
+
+Google Scholar
+
+Supplementary citations, GS h-index, profile metrics
+
+SerpAPI or scholarly library
+
+Monthly
+
+Web of Science
+
+Publications, citations, journal impact factors
+
+REST API (if subscribed)
+
+Weekly
+
+Patent Databases
+
+Patent filings, grants, status for KLE Tech inventors
+
+Google Patents API + IPO scraping
+
+Monthly
+
+NIRF Data
+
+Peer institution metrics for benchmarking
+
+Public dataset parsing
+
+Annually
+
+
+
+3.1.2 Internal Data Sources
+
+Source
+
+Data Provided
+
+Integration Method
+
+University ERP
+
+Funded project records, research expenditure, PhD enrollment and milestones, organizational hierarchy (campus → department → faculty mapping)
+
+Database connector or API
+
+Faculty Profile Database
+
+Faculty names, departments, campus, Scopus IDs, Google Scholar IDs, research areas, designation
+
+CSV import or database connector
+
+Departmental Records
+
+MoUs, collaboration agreements, consultancy records, IP filings
+
+Structured spreadsheet or shared drive
+
+
+
+3.2 Layer 2 — Hierarchical Data Model & Storage
+
+The central PostgreSQL database stores all records at the finest granularity and supports automatic roll-up through the organizational hierarchy. The key design principle is: store once at the individual level, aggregate on demand at every higher level.
+
+3.2.1 Organizational Hierarchy Entity
+
+The foundation of the multi-level system is the organizational structure:
+
+Entity
+
+Key Fields
+
+University
+
+university_id, name, established_year, nirf_rank, naac_grade
+
+Campus
+
+campus_id, university_id (FK), name, location, campus_director, established_year
+
+Department
+
+dept_id, campus_id (FK), name, hod, research_centres, faculty_count, established_year
+
+Faculty
+
+faculty_id, dept_id (FK), name, designation, scopus_id, google_scholar_id, research_areas, date_of_joining, is_active
+
+
+
+3.2.2 Research Data Entities
+
+Entity
+
+Key Fields
+
+Publication
+
+pub_id, title, authors (FK to faculty), journal_name, journal_quartile, year, doi, citation_count, scopus_eid, source_db, is_collaborative, collaborating_institutions
+
+Funded Project
+
+project_id, title, pi (FK to faculty), co_pis, funding_agency, amount, start_date, end_date, status, deliverables, outcomes
+
+Patent / IP
+
+ip_id, title, inventors (FK to faculty), type, filing_date, grant_date, status, jurisdiction, commercialization_status
+
+PhD Scholar
+
+scholar_id, name, supervisor (FK to faculty), dept_id, registration_date, coursework_status, publications_count, current_status, expected_completion
+
+Collaboration
+
+collab_id, partner_institution, type, initiating_faculty (FK), dept_id, mou_date, joint_publications, joint_projects, active_status
+
+Target
+
+target_id, level (university/campus/department), entity_id, metric_name, target_value, year, set_by, approved_date
+
+
+
+3.2.3 Aggregation Logic
+
+Every research record is linked to a faculty member through foreign keys. The system automatically computes aggregates:
+
+Department Level: Sum/average of all faculty within the department. Example: Department publication count = sum of all faculty publications in that department.
+
+Campus Level: Sum/average of all departments within the campus. Example: Campus h-index = weighted aggregate of department h-indices.
+
+University Level: Sum/average of all campuses. Example: Total university funding = sum across all campuses.
+
+These aggregations are pre-computed during the nightly processing cycle and stored as materialized views for fast dashboard loading, while also being computable on-demand for real-time queries.
+
+
+
+3.3 Layer 3 — Multi-Level Dashboard
+
+The dashboard provides a different experience for each organizational level, while maintaining a consistent visual language and drill-down capability throughout.
+
+3.3.1 Dashboard Views by Level
+
+Level
+
+Dashboard Home
+
+Key Visualizations
+
+Drill-Down Capability
+
+University
+
+Institutional scorecard: top-line KPIs with traffic-light status against targets, NIRF trajectory, peer comparison summary
+
+University trend lines (5-year), campus comparison heatmap, funding portfolio donut chart, journal quality pyramid, PhD pipeline funnel
+
+Click any campus to drill into campus view; click any metric to see department-wise breakdown
+
+Campus
+
+Campus scorecard: KPIs for this campus with comparison against other campuses and against campus-specific targets
+
+Department ranking bars, campus growth trends, top contributing departments, inter-campus benchmarking radar chart
+
+Click any department to drill into department view; toggle to compare with specific other campuses
+
+Department
+
+Department scorecard: detailed metrics with faculty-level visibility, progress against department targets, inter-department ranking
+
+Faculty publication heatmap, journal quality distribution, funded project timeline, PhD scholar status board, collaboration network graph
+
+Click any faculty name to see individual profile; filter by year, journal quartile, project status
+
+Faculty
+
+Personal research profile: own metrics with department averages shown as benchmarks for self-assessment
+
+Personal publication timeline, citation growth curve, h-index trajectory, active projects, supervised PhD scholars, co-author network
+
+Compare with department average; view individual publication details; see citation details per paper
+
+
+
+3.3.2 Drill-Down Navigation
+
+The dashboard supports seamless drill-down from any level to the level below. A Vice Chancellor viewing the university dashboard can click a campus name to see that campus’s performance, then click a department, then a faculty member — all within the same interface. Breadcrumb navigation shows the current path (e.g., University ▸ Hubballi Campus ▸ Computer Science ▸ Dr. Sharma) and allows jumping back to any level.
+
+3.3.3 Comparative Analytics
+
+At every level, the dashboard provides contextual comparison:
+
+University Level: KLE Tech vs 5–8 peer institutions on NIRF research parameters.
+
+Campus Level: This campus vs other KLE Tech campuses on all metrics.
+
+Department Level: This department’s rank among all departments university-wide, and comparison with peer departments in similar disciplines.
+
+Faculty Level: Individual metrics shown alongside department average and department top-performer benchmarks.
+
+
+
+3.3.4 Access Control Matrix
+
+Role
+
+Typical Users
+
+Univ View
+
+Campus View
+
+Dept View
+
+Faculty View
+
+University Executive
+
+VC, Pro-VC, Registrar
+
+FULL
+
+ALL
+
+ALL
+
+ALL
+
+Campus Director
+
+Campus Principals
+
+SUMMARY
+
+OWN
+
+OWN CAMPUS
+
+OWN CAMPUS
+
+Dean
+
+Dean of Research, Dean of Academics
+
+SUMMARY
+
+ALL
+
+ALL
+
+ALL
+
+Department Head
+
+HoDs, Centre Heads
+
+—
+
+RANKING
+
+OWN
+
+OWN DEPT
+
+Faculty Member
+
+Individual Researchers
+
+—
+
+—
+
+AGGREGATE
+
+OWN
+
+
+
+"FULL" means complete access to all data and drill-down. "OWN" means full access to their own organizational unit. "SUMMARY" means aggregate numbers without individual-level detail. "RANKING" means they can see where their unit ranks but not detailed data of other units. "AGGREGATE" means they see department averages as benchmarks but not individual colleagues’ data.
+
+
+
+3.4 Layer 4 — AI Intelligence Layer (Claude API)
+
+The intelligence layer is the most differentiated feature of the RIA. Unlike static dashboards, the AI layer generates narrative insights tailored to each leadership level and responds to natural language queries with context-aware analysis.
+
+3.4.1 Role-Specific Automated Briefings
+
+The system generates different AI briefings for different organizational levels:
+
+Level
+
+Briefing Focus
+
+Tone & Depth
+
+Frequency
+
+University
+
+Strategic overview: institutional trajectory, NIRF positioning changes, cross-campus patterns, major achievements, risk areas requiring board-level attention, peer comparison shifts
+
+Strategic, concise, decision-oriented. Focuses on implications and recommended actions.
+
+Monthly (with quarterly deep-dive)
+
+Campus
+
+Campus performance summary: which departments are growing, which need intervention, campus-specific strengths to leverage, cross-campus comparison, progress against campus targets
+
+Operational-strategic blend. Highlights department-level patterns and campus-specific opportunities.
+
+Monthly
+
+Department
+
+Department detail: faculty publication activity, who is publishing vs who is inactive, journal quality trends, funded project status, PhD milestone updates, specific actions for the HoD
+
+Operational, actionable, names specific faculty and metrics. Provides concrete recommendations.
+
+Bi-weekly
+
+Faculty
+
+Personal research summary: your publication count and citation trend, how you compare with department average, upcoming project deadlines, PhD scholar status, suggestions for improvement
+
+Supportive, growth-oriented, personal. Celebrates achievements and suggests concrete next steps.
+
+Monthly
+
+
+
+3.4.2 Context-Aware Query Interface
+
+The natural language query interface is aware of the user’s role and organizational context. When a user asks a question, the system automatically scopes the response to their level:
+
+Query Example
+
+How It Responds by Role
+
+"How are we doing in publications this year?"
+
+VC sees university-wide data. Campus Director sees their campus. HoD sees their department. Faculty sees their own count vs department average.
+
+"Which areas need attention?"
+
+VC sees underperforming campuses/departments. Campus Director sees weak departments on their campus. HoD sees inactive faculty and at-risk projects. Faculty sees their gaps vs benchmarks.
+
+"Compare our performance with last year"
+
+Each level sees year-on-year comparison at their scope: university totals, campus totals, department totals, or personal metrics respectively.
+
+"Who are the top performers?"
+
+VC sees top campuses and departments. Campus Director sees top departments on their campus. HoD sees top faculty in their department. Faculty sees their ranking within the department.
+
+
+
+Users can also ask cross-level questions if their access permits: a VC can ask "How is the Computer Science department at the Hubballi campus performing?" and get a detailed response, while an HoD asking about another department would see only aggregate data.
+
+
+
+4. Key Performance Indicators
+
+Every KPI is measured at all four levels. The table below shows how the same metric manifests differently at each organizational level:
+
+4.1 Publication Metrics
+
+KPI
+
+University View
+
+Campus View
+
+Department View
+
+Faculty View
+
+Total Publications
+
+Institutional total, YoY growth, per-faculty average
+
+Campus total, share of university output, campus YoY growth
+
+Department total, rank among departments, per-faculty rate
+
+Personal count, vs department average, trend line
+
+Journal Quality (Q1/Q2 %)
+
+% of total in Q1+Q2, trend, peer comparison
+
+Campus Q1+Q2 %, vs other campuses
+
+Department Q1+Q2 %, faculty-wise breakdown
+
+Personal Q1+Q2 ratio, vs dept average
+
+Citation Count
+
+Total citations, citations/paper, growth rate
+
+Campus citations, campus citations/paper
+
+Department citations, top-cited papers list
+
+Personal citations, per-paper breakdown
+
+h-index
+
+Institutional h-index, trend
+
+Campus aggregate h-index
+
+Department h-index, faculty h-index ranking
+
+Personal h-index, trajectory, dept benchmark
+
+
+
+4.2 Funded Research Metrics
+
+KPI
+
+University View
+
+Campus View
+
+Department View
+
+Faculty View
+
+Funding Secured
+
+Total INR, agency portfolio, YoY growth
+
+Campus share, campus agency-wise split
+
+Department total, per-faculty funding rate
+
+Personal grants, active project amounts
+
+Active Projects
+
+Total active, completion rate, at-risk count
+
+Campus active projects, campus completion rate
+
+Department projects, status breakdown
+
+Personal projects, deadlines, status
+
+
+
+4.3 Additional Metrics (All Levels)
+
+PhD Program: Enrollment, completion rate, time-to-degree, publications per scholar, supervisor load — each shown at the user’s organizational level.
+
+Intellectual Property: Patents filed/granted, by domain and jurisdiction — aggregated to department, campus, and university.
+
+Collaborations: Co-authorship network, active MoUs, joint projects — shown as network graphs at department level and aggregated counts at higher levels.
+
+NIRF Research Score: University-level only, with component-wise breakdown showing which sub-parameters are strong and which need improvement.
+
+4.4 Cascading Targets
+
+The target system works top-down: institutional targets set by the Vice Chancellor are disaggregated to campus targets (by the VC/Deans) and then to department targets (by Campus Directors/Deans). Each level sees their specific target alongside current performance. The dashboard shows green (on track), amber (at risk), and red (behind) indicators at every level against these cascaded targets.
+
+
+
+5. Automated Alerts & Triggers
+
+Alerts are generated at the appropriate organizational level and delivered to the relevant leadership:
+
+Alert
+
+Trigger
+
+Sent To
+
+Priority
+
+Publication Decline
+
+Department drops 15%+ below 3-year rolling average
+
+HoD + Campus Director + Dean of Research
+
+HIGH
+
+University Target at Risk
+
+Quarterly pace indicates institutional annual target will not be met
+
+VC + Pro-VC + Dean of Research
+
+HIGH
+
+Campus Target at Risk
+
+Campus quarterly pace below target trajectory
+
+Campus Director + Dean of Research
+
+HIGH
+
+Dept Target at Risk
+
+Department quarterly pace below target
+
+HoD + Campus Director
+
+HIGH
+
+Project Deadline
+
+Funded project within 3 months of deadline with pending deliverables
+
+PI (faculty) + HoD
+
+HIGH
+
+PhD Overdue
+
+Scholar exceeds timeline by 6+ months
+
+Supervisor (faculty) + HoD
+
+MEDIUM
+
+Faculty Inactivity
+
+No publications in 24 months
+
+HoD + Campus Director
+
+MEDIUM
+
+Campus Achievement
+
+Campus crosses annual target ahead of schedule
+
+Campus Director + VC
+
+INFO
+
+Positive Milestone
+
+Department/faculty significant achievement (100th pub, first patent, etc.)
+
+Faculty + HoD + Campus Director
+
+INFO
+
+
+
+6. Technology Stack
+
+Layer
+
+Technology
+
+Purpose
+
+Data Pipelines
+
+Python 3.11+ (requests, pandas, SQLAlchemy)
+
+API connectors, data cleaning, transformation, loading, hierarchy resolution
+
+Scheduling
+
+Celery + Redis or Linux cron
+
+Automated job execution: daily citation updates, weekly publication pulls, monthly full refresh
+
+Database
+
+PostgreSQL 16 with materialized views
+
+Central data store with pre-computed aggregates at each organizational level for fast dashboard loading
+
+Backend API
+
+FastAPI (Python)
+
+REST API with role-based endpoints; serves level-appropriate data based on authenticated user’s role
+
+Frontend
+
+React / Next.js with Recharts
+
+Multi-level dashboard with drill-down navigation, breadcrumbs, comparative charts, and query interface
+
+AI Layer
+
+Claude API (Sonnet + Opus)
+
+Role-specific insight generation, context-aware query responses, automated briefings at each level
+
+Hosting
+
+Institutional server or AWS/Azure
+
+Dashboard, database, pipeline hosting; separate environments for dev/staging/production
+
+Authentication
+
+OAuth 2.0 / Institutional SSO
+
+Single sign-on with role mapping from university directory; determines dashboard level and data scope
+
+
+
+7. Implementation Roadmap
+
+Phase 1: Foundation (Weeks 1–4)
+
+Objective: Establish the hierarchical data backbone and deliver university + department level publication dashboards.
+
+Design and deploy PostgreSQL database with complete organizational hierarchy (University → Campus → Department → Faculty)
+
+Build Scopus API connector; import 5+ years of historical publication data for all faculty across all campuses
+
+Create faculty master database with Scopus IDs, department assignments, and campus mapping
+
+Deploy university-level Executive Summary dashboard and department-level drill-down
+
+Implement role-based authentication with SSO integration
+
+
+
+Phase 1 Deliverable
+
+A working two-level dashboard (University and Department) showing the complete publication and citation landscape. The VC sees institutional totals and can drill into any department. HoDs see their department detail. Updated weekly from Scopus.
+
+
+
+Phase 2: Multi-Level Enrichment (Weeks 5–8)
+
+Objective: Add campus level, faculty profiles, internal data, and comparative analytics.
+
+Add campus-level aggregation and the Campus Dashboard view
+
+Build individual Faculty Profile pages with self-assessment benchmarks
+
+Integrate funded project data, PhD scholar tracking, and patent records from ERP
+
+Implement comparative analytics: inter-campus, inter-department, and faculty-vs-average comparisons
+
+Add NIRF benchmarking with peer institution data
+
+Build cascading target system: university → campus → department targets with progress tracking
+
+Implement multi-level automated alert system with role-appropriate delivery
+
+
+
+Phase 3: Intelligence (Weeks 9–12)
+
+Objective: Add AI-powered, role-specific intelligence at every level.
+
+Integrate Claude API with role-aware prompt templates for each organizational level
+
+Build automated briefing generation: monthly for VC/campus, bi-weekly for HoDs, monthly for faculty
+
+Deploy context-aware natural language query interface on the dashboard
+
+Set up automated email delivery of level-specific briefings
+
+Add collaboration tracking module
+
+Conduct user acceptance testing with stakeholders at each level (VC, Campus Director, 2–3 HoDs, 5–10 faculty)
+
+
+
+Phase 4: Refinement (Ongoing)
+
+Tune AI briefing quality based on feedback from each leadership level
+
+Refine alert thresholds and delivery preferences
+
+Add predictive analytics (projected year-end metrics at each level)
+
+Expand data sources (Altmetric, additional patent databases)
+
+Build mobile-responsive views for on-the-go access
+
+Explore integration with institutional strategic planning systems
+
+
+
+8. Resource Requirements
+
+8.1 Human Resources
+
+Role
+
+Responsibility
+
+Commitment
+
+Phase
+
+Full-Stack Developer
+
+Data pipelines, hierarchical database, multi-level dashboard, AI integration, authentication
+
+Full-time, 3–4 months
+
+Phases 1–3, then part-time
+
+UI/UX Designer
+
+Dashboard design for each level, drill-down navigation, mobile-responsive layouts, visual consistency
+
+Part-time, 2 months
+
+Phases 1–2
+
+Data Analyst
+
+Define metrics, verify data quality at each level, validate aggregation logic, set initial targets
+
+Part-time, 3 months
+
+Phases 1–2
+
+Project Champion
+
+Institutional context, data access, coordinate across campuses and departments, validate insights
+
+Part-time, ongoing
+
+All phases
+
+IT Support
+
+Server setup, SSO integration, network configuration, infrastructure maintenance
+
+As needed
+
+Setup + ongoing
+
+
+
+8.2 Infrastructure & Subscriptions
+
+Scopus API: Institutional Elsevier subscription with API key registration.
+
+Claude API: Anthropic API subscription. Multi-level briefings increase query volume slightly; estimated cost remains within standard tier.
+
+Server/Cloud: Slightly larger instance than single-level system due to materialized views and multi-level aggregation. AWS t3.large or equivalent. Est. INR 8,000–15,000/month.
+
+Domain & SSL: Institutional subdomain (e.g., research-intel.kletech.ac.in) with SSL certificate.
+
+
+
+9. Person-Independence Design
+
+Design Element
+
+How It Ensures Independence
+
+Automated Data Pull
+
+All data acquisition runs on schedules. No person manually extracts, compiles, or uploads data at any level.
+
+Automatic Aggregation
+
+Metrics roll up automatically from faculty through department, campus, to university. No one manually prepares campus or university reports from department data.
+
+Self-Updating Dashboard
+
+Every level’s dashboard refreshes automatically. The VC, campus director, HoD, and faculty all see current data by simply opening their browser.
+
+Role-Specific AI Briefings
+
+Each leadership level receives tailored insights generated automatically. No analyst writes these reports — the AI generates them from data.
+
+Self-Service Query
+
+Any authorized person at any level asks questions directly. No request queue, no waiting for someone to run a report.
+
+Cascading Targets
+
+Once set, targets propagate automatically through the hierarchy. Progress is tracked and alerts triggered without manual monitoring.
+
+Documented System
+
+Complete documentation ensures any developer can maintain or extend the system. No single person holds critical knowledge.
+
+
+
+Ongoing human tasks are limited to: adding Scopus IDs for new faculty, updating the organizational hierarchy when departments or campuses change, periodic server maintenance, and annual review of targets and alert thresholds.
+
+
+
+10. Risks & Mitigation
+
+Risk
+
+Impact
+
+Mitigation
+
+Incomplete Scopus Coverage
+
+Faculty without Scopus profiles lead to undercounting, distorting department and campus metrics
+
+Supplement with Google Scholar; institutional drive to ensure all faculty have Scopus profiles; track coverage percentage per department
+
+Organizational Hierarchy Changes
+
+Departments merging, new campuses, faculty transfers could break aggregation
+
+Flexible hierarchy model with effective dates; admin interface for updating structure without developer intervention
+
+Internal Data Quality
+
+Inconsistent funded project or PhD records across departments/campuses
+
+Standard data format enforced at entry; validation rules; data quality score per department visible to campus directors
+
+Multi-Level Complexity
+
+Four dashboard levels increase development time and testing effort
+
+Phased rollout: university+department first, campus and faculty views added in Phase 2; reusable component architecture
+
+User Adoption Across Levels
+
+Different user sophistication levels; faculty may not use the system
+
+Role-specific onboarding; proactive email briefings don’t require login; simple, clean interface design; mobile access
+
+AI Hallucination
+
+AI-generated insights may be inaccurate, especially at granular levels
+
+Always pass actual data; include source references; level-specific prompt engineering with guardrails
+
+Privacy Concerns
+
+Faculty may object to individual-level performance visibility
+
+Strict access control: only HoD sees individual faculty data; faculty see only their own profile; clear data usage policy communicated upfront
+
+
+
+11. Success Criteria
+
+Multi-Level Data Completeness: 90%+ of active faculty publications captured, with correct department and campus attribution.
+
+Dashboard Uptime: 99% availability during working hours across all levels.
+
+Adoption Across Levels: Within first quarter: VC/Pro-VC regularly use university view; at least 3 Campus Directors use campus view; at least 50% of HoDs use department view.
+
+Aggregation Accuracy: University and campus aggregate numbers match independently verified totals with less than 2% variance.
+
+AI Briefing Relevance: 80%+ of recipients at each level rate their briefings as useful or very useful.
+
+Strategic Impact: At least 3 strategic decisions at university or campus level informed by RIA insights within 6 months.
+
+Person-Independence: System updates all levels and generates all briefings for 4+ consecutive weeks without manual intervention.
+
+Query Quality: Context-aware queries return role-appropriate, data-backed responses 85%+ of the time.
+
+
+
+12. Recommended Next Steps
+
+Stakeholder Alignment: Present this document to Vice Chancellor and Dean of Research. Identify one champion at each level (campus director, HoD, active faculty member) as design partners.
+
+Organizational Hierarchy Mapping: Document the complete University → Campus → Department structure with current leadership at each level. This defines the access control matrix.
+
+Data Audit: Confirm Scopus API access; map internal systems where funded project and PhD data reside per campus; assess data consistency across campuses.
+
+Faculty Scopus ID Collection: Compile master list of all faculty across all campuses with their Scopus Author IDs, department, and campus assignment. This is the most critical prerequisite.
+
+Target Definition: Work with VC and Deans to define institutional research targets for the current year, which will cascade to campus and department levels.
+
+Developer Assignment: Identify or recruit the full-stack developer and UI designer. Consider adding a part-time data analyst.
+
+Phase 1 Kickoff: Begin with Scopus data pipeline and university + department dashboards to deliver tangible value within 4 weeks.
+
+
+
+End of Document
+
