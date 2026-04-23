@@ -156,17 +156,9 @@ function buildPlotlyData(publications) {
    */
   const ids = [], labels = [], parents = [], values = [];
 
-  // L1: Campuses (no root node — campuses are the innermost ring)
-  Object.entries(campusCounts)
-    .filter(([, v]) => v > 0)
-    .forEach(([campus, count]) => {
-      ids.push(`C-${campus}`);
-      labels.push(campus);
-      parents.push('');
-      values.push(count);
-    });
-
-  // L3: Departments (under their campus)
+  // L2: Departments (under their campus)
+  // [MODIFIED] — we skip the campus level (L1) per user request to "remove the root bvb"
+  // so departments become the innermost ring.
   // L4: Q-Ranks (under their department)
   // Use the full dept name as the ID — Plotly IDs just need to be unique strings.
   // Truncating caused collisions (e.g. "Computer Science" and "Computer Science and Eng"
@@ -177,7 +169,7 @@ function buildPlotlyData(publications) {
       const deptId = `D||${dept}`;   // full name as ID, prefixed to avoid collisions with campus IDs
       ids.push(deptId);
       labels.push(dept.length > 28 ? dept.slice(0, 26) + '…' : dept);
-      parents.push(`C-${info.campus}`);
+      parents.push('');   // [MODIFIED] — parent was `C-${info.campus}`, now root `''`
       values.push(info.total);
 
       // Q-rank children for this department
@@ -354,7 +346,7 @@ function DeptDetailPanel({ dept, stats, onClose }) {
  *  AI Chat Panel — Groq-powered Q&A on publication data
  * ───────────────────────────────────────────── */
 
-function PublicationAIChat({ publications, deptStats, campusStats, yearStack }) {
+function PublicationAIChat({ publications, deptStats, campusStats, yearStack, focus, onClearFocus }) {
   const [isOpen, setIsOpen] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [apiKey, setApiKey] = useState(localStorage.getItem('groq_api_key') || '');
@@ -365,6 +357,11 @@ function PublicationAIChat({ publications, deptStats, campusStats, yearStack }) 
     { id: 1, text: "Hello! I'm your Publication AI Assistant. Ask me anything about KLE Tech's 6,500+ publications — departments, Q-ranks, trends, journals, or specific authors.", isBot: true },
   ]);
   const messagesEndRef = useRef(null);
+
+  // Auto-open chatbot when a chart sector is selected so the focus badge is visible
+  useEffect(() => {
+    if (focus) setIsOpen(true);
+  }, [focus]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -523,8 +520,8 @@ Total publications: ${publicationContext.length}`;
     }
 
     if (filtered.length > 0) {
-      extra += `\n=== QUERY MATCH SUMMARY ===\n`;
-      extra += `Total matched: ${filtered.length} publications\n`;
+      extra += `\n=== FILTERED PERFORMANCE SUMMARY ===\n`;
+      extra += `Total results: ${filtered.length} publications\n`;
 
       // Year breakdown
       const yrCounts = {};
@@ -591,25 +588,34 @@ Total publications: ${publicationContext.length}`;
   const callGroq = async (promptText) => {
     const queryContext = buildQueryContext(promptText);
 
+    let focusContext = '';
+    if (focus) {
+      if (focus.type === 'dept') focusContext = `\n=== CURRENT FOCUS ===\nUser is specifically looking at the Department: ${focus.value}. All answers should prioritize this department unless asked otherwise.`;
+      else if (focus.type === 'qrank') focusContext = `\n=== CURRENT FOCUS ===\nUser is specifically looking at ${focus.value} publications in ${focus.parentValue}.`;
+      else if (focus.type === 'year') focusContext = `\n=== CURRENT FOCUS ===\nUser is specifically looking at the Year: ${focus.value}.`;
+    }
+
     const systemInstruction = `You are the Publication Intelligence Assistant for KLE Technological University's Research Analytics Dashboard.
 
 Here is live data from 6,500+ publications:
 
 ${baseContext}
 ${queryContext}
+${focusContext}
 
 RULES:
 1. Answer clearly and concisely using ONLY the data above. Do not invent names or numbers.
 2. Use bullet points, tables, or short paragraphs as appropriate.
-3. When listing publications, list EVERY title from the PUBLICATIONS section with title, journal, year, and Q-rank. Do NOT skip any. The data provided is the complete matched result from the university database, not sample data.
-4. For department questions, reference the TOP 15 DEPARTMENTS data and any matched publications.
-5. For year-specific questions, use YEAR-WISE PUBLICATIONS and matched data.
-6. For journal questions, use TOP 15 JOURNALS and matched publications.
+3. When listing publications, list EVERY title from the PUBLICATIONS section with title, journal, year, and Q-rank. Do NOT skip any. The data provided is the complete result from the university database, not sample data.
+4. For department questions, reference the TOP 15 DEPARTMENTS data and any filtered publications.
+5. For year-specific questions, use YEAR-WISE PUBLICATIONS and results.
+6. For journal questions, use TOP 15 JOURNALS and results.
 7. For Q-rank analysis, reference Q-RANK DISTRIBUTION and department-wise Q1 percentages.
-8. For counts, use the exact numbers from QUERY MATCH SUMMARY (total, year-wise, Q-rank). Do NOT count listed records manually — use the pre-computed numbers.
+8. For counts, use the exact numbers from the FILTERED PERFORMANCE SUMMARY (total, year-wise, Q-rank). Do NOT count listed records manually — use the pre-computed numbers.
 9. If data is not available or insufficient, say so — do not speculate.
 10. When asked about trends, compare year-over-year numbers from the YEAR-WISE data.
-11. All data provided is real, verified data from the university database. Do NOT say "sample" or "partial".`;
+11. All data provided is real, verified data from the university database. Do NOT say "sample" or "partial".
+12. IMPORTANT: Do NOT mention the names "Query Match Summary", "Matched Summary", or "Filtered Performance Summary" to the user. Present the numbers as your own analysis of the university's publication data.`;
 
     // Include last 4 conversation turns for follow-up context
     const recentHistory = messages.slice(-4).map(m => ({
@@ -739,6 +745,30 @@ RULES:
               )}
             </AnimatePresence>
 
+            {/* Focus Badge */}
+            <AnimatePresence>
+              {focus && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 10 }}
+                  className="px-md py-xs bg-accent-indigo/10 border-b border-mist flex items-center justify-between"
+                >
+                  <span className="text-micro font-medium text-accent-indigo flex items-center gap-xs">
+                    <Sparkles size={12} />
+                    Focused on: {focus.type === 'qrank' ? `${focus.parentValue} (${focus.value})` : focus.value}
+                  </span>
+                  <button
+                    onClick={onClearFocus}
+                    className="p-1 rounded-full hover:bg-mist text-smoke hover:text-kle-crimson transition-colors"
+                    title="Clear focus"
+                  >
+                    <X size={12} />
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-md space-y-lg bg-fog relative">
               {messages.map((msg) => (
@@ -819,7 +849,7 @@ export default function PublicationExplorer() {
   const [plotData, setPlotData]         = useState(null);
   const [selectedDept, setSelectedDept] = useState(null); // for detail panel
   const [selectedYear, setSelectedYear] = useState(null); // for year drill-down
-
+  const [chatFocus, setChatFocus]       = useState(null); // { type: 'dept'|'qrank'|'year', value, parentValue }
   /* ── Load publications from Excel on mount ── */
   useEffect(() => {
     let cancelled = false;
@@ -837,6 +867,52 @@ export default function PublicationExplorer() {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  /* ── Sunburst/Treemap context: read drill-down level after Plotly updates ──
+   * Passively observe via onUpdate — no click interception, so drill-down is untouched.
+   * Guards: skip if level unchanged, use functional setState to avoid re-render loops. */
+  const lastSunburstLevel = useRef('');
+  const chatFocusRef = useRef(null);
+  const selectedDeptRef = useRef(null);
+  useEffect(() => { chatFocusRef.current = chatFocus; }, [chatFocus]);
+  useEffect(() => { selectedDeptRef.current = selectedDept; }, [selectedDept]);
+
+  const handleSunburstUpdate = (figure) => {
+    const level = figure?.data?.[0]?.level || '';
+    if (level === lastSunburstLevel.current) return;
+    lastSunburstLevel.current = level;
+    const ds = plotData?.deptStats;
+    if (!level) {
+      if (chatFocusRef.current !== null) setChatFocus(null);
+      return;
+    }
+    if (level.startsWith('C-')) {
+      setChatFocus({ type: 'dept', value: level.slice(2) });
+    } else if (level.startsWith('D||') && !level.slice(3).includes('||')) {
+      const deptName = level.slice(3);
+      if (ds?.[deptName]) setChatFocus({ type: 'dept', value: deptName });
+    } else if (level.startsWith('D||') && level.split('||').length === 3) {
+      const [, deptName, qRank] = level.split('||');
+      setChatFocus({ type: 'qrank', value: qRank, parentValue: deptName });
+    }
+  };
+
+  const lastTreemapLevel = useRef('');
+  const handleTreemapUpdate = (figure) => {
+    const level = figure?.data?.[0]?.level || '';
+    if (level === lastTreemapLevel.current) return;
+    lastTreemapLevel.current = level;
+    const ds = plotData?.deptStats;
+    if (!level || level === 'All') {
+      if (chatFocusRef.current !== null) setChatFocus(null);
+      if (selectedDeptRef.current !== null) setSelectedDept(null);
+      return;
+    }
+    if (ds?.[level]) {
+      setSelectedDept(level);
+      setChatFocus({ type: 'dept', value: level });
+    }
+  };
 
   /* ── Year drill-down: when a year bar is clicked, compute dept breakdown ── */
   const yearDeptBreakdown = useMemo(() => {
@@ -904,7 +980,6 @@ export default function PublicationExplorer() {
         <div className="flex items-center justify-between overflow-x-auto gap-lg">
           {[
             { label: 'Total Pubs', value: fmt(publications.length), color: 'text-white' },
-            { label: 'BVB Campus', value: fmt(campusStats.BVB), color: 'text-kle-crimson-light' },
             { label: 'Belagavi', value: fmt(campusStats.Belagavi), color: 'text-accent-indigo-light' },
             { label: 'Bengaluru', value: fmt(campusStats.Bengaluru), color: 'text-accent-teal-light' },
             { label: 'Q1 Pubs', value: fmt(sunburst.values.filter((_, i) => sunburst.labels[i] === 'Q1').reduce((a, b) => a + b, 0)), color: 'text-accent-teal-light' },
@@ -969,23 +1044,51 @@ export default function PublicationExplorer() {
                         parents: sunburst.parents,
                         values: sunburst.values,
                         branchvalues: 'total',
-                        maxdepth: 3,
+                        maxdepth: 1,
                         hovertemplate: '<b>%{label}</b><br>%{value} publications<br>%{percentRoot:.1%} of total<extra></extra>',
-                        textinfo: 'label+percent entry',
+                        /* Depth 1 (departments): show label.
+                         * Depth 2 (Q-ranks, visible after drill-in): show label + percentage. */
+                        texttemplate: sunburst.ids.map((id) => {
+                          const parts = id.split('||');
+                          if (parts.length === 2) return '%{label}';  // dept name
+                          return '%{label}<br>%{percentEntry:.1%}';   // Q-rank + share
+                        }),
                         textfont: { size: 11, family: 'Inter' },
                         insidetextorientation: 'radial',
                         marker: {
-                          colors: sunburst.ids.map((id) => {
-                            if (id.startsWith('C-')) return COLORS[id.slice(2)] || '#78716C';
-                            // Q-rank leaf nodes: "D||DeptName||Q1" etc.
-                            if (id.endsWith('||Q1')) return COLORS.Q1;
-                            if (id.endsWith('||Q2')) return COLORS.Q2;
-                            if (id.endsWith('||Q3')) return COLORS.Q3;
-                            if (id.endsWith('||Q4')) return COLORS.Q4;
-                            if (id.endsWith('||Unranked')) return COLORS.Unranked;
-                            // Department nodes
-                            return '#A8A29E'; // stone-400
-                          }),
+                          colors: (() => {
+                            // Theme-aligned palette for depth-1 (departments).
+                            // Q-rank colors in COLORS remain authoritative for depth-2.
+                            const DEPT_PALETTE = [
+                              '#0F766E', // teal
+                              '#3730A3', // indigo
+                              '#B45309', // gold
+                              '#B91C1C', // crimson
+                              '#6D28D9', // purple
+                              '#0E7490', // cyan
+                              '#15803D', // green
+                              '#A16207', // dark gold
+                              '#7C2D12', // dark crimson
+                              '#4C1D95', // dark purple
+                              '#1E40AF', // royal blue
+                              '#BE185D', // pink
+                            ];
+                            const deptColorMap = {};
+                            let deptIdx = 0;
+                            return sunburst.ids.map((id) => {
+                              if (id.endsWith('||Q1')) return COLORS.Q1;
+                              if (id.endsWith('||Q2')) return COLORS.Q2;
+                              if (id.endsWith('||Q3')) return COLORS.Q3;
+                              if (id.endsWith('||Q4')) return COLORS.Q4;
+                              if (id.endsWith('||Unranked')) return COLORS.Unranked;
+                              // Depth-1 department node — assign stable palette color
+                              if (!(id in deptColorMap)) {
+                                deptColorMap[id] = DEPT_PALETTE[deptIdx % DEPT_PALETTE.length];
+                                deptIdx++;
+                              }
+                              return deptColorMap[id];
+                            });
+                          })(),
                         },
                       }]}
                       layout={{
@@ -995,15 +1098,7 @@ export default function PublicationExplorer() {
                       useResizeHandler
                       style={{ width: '100%', height: '100%' }}
                       config={{ displayModeBar: false, responsive: true }}
-                      onClick={(e) => {
-                        if (!e.points?.[0]) return;
-                        const clickedId = e.points[0].id || '';
-                        // IDs for department nodes are "D||DeptName"
-                        if (clickedId.startsWith('D||') && !clickedId.slice(3).includes('||')) {
-                          const deptName = clickedId.slice(3); // strip the "D||" prefix
-                          if (deptStats[deptName]) setSelectedDept(deptName);
-                        }
-                      }}
+                      onUpdate={handleSunburstUpdate}
                     />
                   </div>
                 </div>
@@ -1046,13 +1141,7 @@ export default function PublicationExplorer() {
                       useResizeHandler
                       style={{ width: '100%', height: '100%' }}
                       config={{ displayModeBar: false, responsive: true }}
-                      onClick={(e) => {
-                        if (!e.points?.[0]) return;
-                        const label = e.points[0].label;
-                        if (label && label !== 'All Departments' && deptStats[label]) {
-                          setSelectedDept(label);
-                        }
-                      }}
+                      onUpdate={handleTreemapUpdate}
                     />
                   </div>
                 </div>
@@ -1106,7 +1195,9 @@ export default function PublicationExplorer() {
                         config={{ displayModeBar: false, responsive: true }}
                         onClick={(e) => {
                           if (!e.points?.[0]) return;
-                          setSelectedYear(e.points[0].x);
+                          const year = e.points[0].x;
+                          setSelectedYear(year);
+                          setChatFocus({ type: 'year', value: year });
                         }}
                       />
                     </div>
@@ -1180,6 +1271,7 @@ export default function PublicationExplorer() {
                               );
                               if (match && deptStats[match[0]]) {
                                 setSelectedDept(match[0]);
+                                setChatFocus({ type: 'dept', value: match[0] });
                               }
                             }}
                           />
@@ -1212,6 +1304,8 @@ export default function PublicationExplorer() {
         deptStats={deptStats}
         campusStats={campusStats}
         yearStack={yearStack}
+        focus={chatFocus}
+        onClearFocus={() => setChatFocus(null)}
       />
     </div>
   );

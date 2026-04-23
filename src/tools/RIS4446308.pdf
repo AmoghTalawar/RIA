@@ -1,0 +1,53 @@
+# Walkthrough: Text-to-SQL Tool Implementation
+
+I have successfully implemented the Text-to-SQL tool for your KLE Research AI Chatbot. The AI can now perform live database queries to answer complex questions about faculty, publications, and institutional metrics.
+
+## Changes Made
+
+### 1. Database Integration
+- **Installed** `@supabase/supabase-js` to handle database communication.
+- **Created** [supabaseClient.js](file:///c:/Users/Lenovo/Downloads/RIA-Dashboard-L1-Interface%28ChatBot%29/ria-dashboard/src/supabaseClient.js) to initialize the connection to your local Supabase instance (`http://127.0.0.1:54321`).
+
+### 2. SQL Tool & Metadata
+- **Created** [sqlTool.js](file:///c:/Users/Lenovo/Downloads/RIA-Dashboard-L1-Interface%28ChatBot%29/ria-dashboard/src/tools/sqlTool.js) which:
+    - Defines the `execute_sql` tool for Groq.
+    - Contains a condensed version of your database schema for the LLM's context.
+    - Implements the execution logic (restricted to `SELECT` queries).
+
+### 3. Chatbot Upgrade
+- **Updated** [AIChatbot.jsx](file:///c:/Users/Lenovo/Downloads/RIA-Dashboard-L1-Interface%28ChatBot%29/ria-dashboard/src/components/AIChatbot.jsx):
+    - **Tool-calling Loop**: The chatbot now follows the assistant/tool/assistant loop required for complex multi-step reasoning.
+    - **System Prompt**: Now includes the full schema and instructions on when to use the SQL tool.
+    - **Bug Fixes**: Corrected regex escaping issues (`\\s` -> `\s`) that were previously breaking name and year searches.
+    - **Memory**: Increased conversation history from 4 to 6 turns for better follow-up handling.
+
+## 🚀 Required Action: Database Setup
+
+To enable the AI to execute raw SQL, you **must** create a special helper function in your Supabase SQL Editor. Run the following query in your [Supabase Dashboard](http://127.0.0.1:54323) (or local SQL runner):
+
+```sql
+/**
+ * Enables raw SQL execution for the Text-to-SQL tool.
+ * SECURITY DEFINER ensures it runs with database owner permissions.
+ */
+CREATE OR REPLACE FUNCTION exec_sql(query_text TEXT)
+RETURNS JSONB 
+LANGUAGE plpgsql 
+SECURITY DEFINER 
+AS $$
+DECLARE
+    result JSONB;
+BEGIN
+    -- Execute the dynamic query and aggregate results into a JSON array
+    EXECUTE 'SELECT json_agg(t) FROM (' || query_text || ') t' INTO result;
+    RETURN result;
+END;
+$$;
+```
+
+## How to Test
+1. Restart your dev server (`npm run dev`).
+2. Open the chatbot and ask:
+   - *"How many faculty members are in the CSE department?"*
+   - *"List the titles of publications from 2024."*
+   - *"Who are the top 3 faculty members by Scopus citations?"*
