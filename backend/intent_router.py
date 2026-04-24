@@ -278,6 +278,52 @@ def _m_top_journals(q: str):
     return None
 
 
+def _m_paper_authors(q: str):
+    """Match queries about who wrote / authored a paper, or who the corresponding author is."""
+    want_corresponding = bool(re.search(r"corresponding", q, _I))
+
+    # "who are the corresponding-author <title>" (no "of" connector — title follows directly)
+    m = re.search(
+        r"^who\s+(?:are|is|was|were)\s+(?:the\s+)?corresponding[- ]authors?\s+(.+?)\s*[.?!]*$",
+        q, _I,
+    )
+    if m:
+        return {"title": _clean(m.group(1)), "corresponding": True}
+
+    # "who are the (corresponding) authors of <title>"
+    m = re.search(
+        r"^who\s+(?:are|is|was|were)\s+(?:the\s+)?(?:corresponding[- ]author(?:s)?|authors?|co[- ]authors?|writers?)\s+"
+        r"(?:of|for|in|on)\s+(.+?)\s*[.?!]*$",
+        q, _I,
+    )
+    if m:
+        return {"title": _clean(m.group(1)), "corresponding": want_corresponding}
+
+    # "who wrote <title>" / "who published <title>"
+    m = re.search(r"^who\s+(?:wrote|published|authored|created)\s+(.+?)\s*[.?!]*$", q, _I)
+    if m:
+        return {"title": _clean(m.group(1)), "corresponding": False}
+
+    # "authors of <title>" / "corresponding author of <title>"
+    m = re.search(
+        r"^(?:(?:corresponding[- ])?authors?\s+(?:of|for|in|on)|authored\s+by)\s+(.+?)\s*[.?!]*$",
+        q, _I,
+    )
+    if m:
+        return {"title": _clean(m.group(1)), "corresponding": want_corresponding}
+
+    # "paper titled <title> — show authors"
+    m = re.search(
+        r"(?:paper|article|publication)\s+(?:titled?|called|named|about)\s+(.+?)"
+        r"(?:\s+(?:and\s+)?(?:show|list|give|find)\s+(?:the\s+)?(?:corresponding[- ])?authors?)?\s*[.?!]*$",
+        q, _I,
+    )
+    if m and re.search(r"author", q, _I):
+        return {"title": _clean(m.group(1)), "corresponding": want_corresponding}
+
+    return None
+
+
 def _m_campus_unsupported(q: str):
     if re.search(
         r"\b(?:bvb|belagavi|bengaluru|bangalore|hubli|hubballi)\s+campus\b", q, _I
@@ -286,7 +332,96 @@ def _m_campus_unsupported(q: str):
     return None
 
 
+def _m_compare_years(q: str):
+    """Match year-vs-year comparison queries like 'pubs in 2019 vs 2024'."""
+    m = re.search(
+        r"(?:publications?|papers?|pubs?)?.{0,30}?(20[12]\d)\s*(?:vs\.?|versus|or|compared?\s+(?:to|with))\s*(20[12]\d)",
+        q, _I,
+    )
+    if m:
+        y1, y2 = int(m.group(1)), int(m.group(2))
+        if y1 != y2:
+            return {"year1": min(y1, y2), "year2": max(y1, y2)}
+    # "which year was better: 2019 or 2024" / "2019 and 2024 publications"
+    years = re.findall(r"\b(20[12]\d)\b", q)
+    if len(years) >= 2:
+        y1, y2 = int(years[0]), int(years[1])
+        if y1 != y2 and re.search(
+            r"\b(?:which|better|compare|vs|versus|between|and|or)\b", q, _I
+        ):
+            return {"year1": min(y1, y2), "year2": max(y1, y2)}
+    return None
+
+
+def _m_best_year(q: str):
+    """Match 'which year had the most publications?'"""
+    if re.search(r"best\s+year\s+for\s+publications", q, _I):
+        return {}
+    if re.search(
+        r"which\s+year\s+(?:had|has|is|was)\s+(?:the\s+)?(?:most|best|highest|maximum|max|peak)\s+(?:publications?|papers?|pubs?|research)",
+        q, _I,
+    ):
+        return {}
+    if re.search(r"\b(?:peak|most\s+productive)\s+year\b", q, _I):
+        return {}
+    return None
+
+
+def _m_year_trend(q: str):
+    """Match 'publications by year' / 'year-wise trend'."""
+    if re.search(r"publications?\s+by\s+year\s+trend", q, _I):
+        return {}
+    if re.search(
+        r"(?:publications?|papers?|pubs?|research)\s+(?:by\s+year|per\s+year|year[- ]?wise)\b",
+        q, _I,
+    ):
+        return {}
+    if re.search(r"year[- ]?wise\s+(?:publication|paper|pub|research)\s+(?:count|trend|breakdown|summary)", q, _I):
+        return {}
+    return None
+
+
+def _m_year_range(q: str):
+    """Match 'publications from 2019 to 2024' / 'research output 2018-2024'."""
+    m = re.search(
+        r"(?:publications?|papers?|pubs?|research\s+output)?[^0-9]*(20[12]\d)\s*(?:to|-|through|until|–)\s*(20[12]\d)",
+        q, _I,
+    )
+    if m:
+        y1, y2 = int(m.group(1)), int(m.group(2))
+        if y1 != y2:
+            return {"year1": min(y1, y2), "year2": max(y1, y2)}
+    return None
+
+
+def _m_dept_year_count(q: str):
+    """Match 'how many pubs did CSE publish in 2023?' / 'ECE publications in 2022'."""
+    m = re.search(
+        r"(?:how\s+many\s+)?(?:publications?|papers?|pubs?|articles?)\s+"
+        r"(?:(?:did|does|from|in|by|of)\s+)?([A-Za-z &]+?)\s+"
+        r"(?:publish|published|produced|have|had|in|for|during)\s+(?:in\s+)?(\d{4})\s*[.?!]*$",
+        q, _I,
+    )
+    if m:
+        dept_raw = _clean(m.group(1).strip())
+        year = int(m.group(2))
+        if re.search(r"\b(?:how|what|which|who|when)\b", dept_raw, _I):
+            return None
+        return {"dept": dept_raw, "year": year}
+    m = re.search(
+        r"^([A-Z]{2,6})\s+(?:publications?|papers?|pubs?)\s+(?:in|for|during)\s+(\d{4})\s*[.?!]*$",
+        q,
+    )
+    if m:
+        return {"dept": m.group(1), "year": int(m.group(2))}
+    return None
+
+
 def _m_yearly_count(q: str):
+    # Guard: skip if two different years are present (handled by compare_years)
+    years = re.findall(r"\b(20[12]\d)\b", q)
+    if len(years) >= 2 and years[0] != years[1]:
+        return None
     m = re.search(
         r"(?:how\s+many\s+|total\s+|number\s+of\s+)?(?:publications?|papers?|pubs?)\s+(?:are\s+there\s+)?(?:in|for|during)\s+(\d{4})\s*[.?!]*$",
         q,
@@ -307,6 +442,14 @@ def _m_faculty_stats(q: str):
         return {"name": _clean(m.group(1))}
     m = re.search(
         r"^how\s+many\s+(?:publications?|papers?|pubs?)\s+(?:does|do|has|have|are\s+there\s+for|for)\s+(.+?)(?:\s+have|\s+has|\s+published|\s+written)?\s*[.?!]*$",
+        q,
+        _I,
+    )
+    if m:
+        return {"name": _clean(m.group(1)), "subset": "pubcount"}
+    # "what is the publication count of X" / "wha is the pub count of X" (typo-tolerant)
+    m = re.search(
+        r"^wh(?:at?|ats?)(?:'s|\s+is|\s+are)?\s+(?:the\s+)?(?:publication[s]?\s+count|pub(?:lication)?\s+count|number\s+of\s+(?:publications?|pubs?|papers?)|h[- ]?index|citation[s]?)\s+(?:of|for|by)\s+(.+?)\s*[.?!]*$",
         q,
         _I,
     )
@@ -367,18 +510,18 @@ def _handle_faculty_stats(args: dict) -> str | None:
         # Full multi-line stats card with every column from v_faculty_full.
         return (
             f"### {top['author_name']}\n"
-            f"- **Department:** {top.get('department') or '—'}"
-            f" ({top.get('short_name') or '—'})\n"
-            f"- **Institute:** {top.get('institute') or '—'}\n"
+            f"- **Department:** {top.get('department') or 'N/A'}"
+            f" ({top.get('short_name') or 'N/A'})\n"
+            f"- **Institute:** {top.get('institute') or 'N/A'}\n"
             f"- **Total publications:** {_fmt_num(top.get('total_pub_count'))}"
             f"  (Journals: {_fmt_num(top.get('journal_count'))},"
             f" Conferences: {_fmt_num(top.get('conference_count'))})\n"
-            f"- **Scopus** — Citations: {_fmt_num(top.get('scopus_citation'))},"
+            f"- **Scopus** - Citations: {_fmt_num(top.get('scopus_citation'))},"
             f" H-index: {_fmt_num(top.get('scopus_hindex'))},"
             f" Q1 papers: {_fmt_num(top.get('scopus_q1_count'))}\n"
-            f"- **Web of Science** — Publications: {_fmt_num(top.get('wos_pub_count'))},"
+            f"- **Web of Science** - Publications: {_fmt_num(top.get('wos_pub_count'))},"
             f" H-index: {_fmt_num(top.get('wos_hindex'))}\n"
-            f"- **Averages** — CiteScore: {_fmt_num(top.get('avg_citescore'))},"
+            f"- **Averages** - CiteScore: {_fmt_num(top.get('avg_citescore'))},"
             f" Impact Factor: {_fmt_num(top.get('avg_impfactor'))}"
         )
 
@@ -390,26 +533,28 @@ def _handle_faculty_stats(args: dict) -> str | None:
     return f'Multiple faculty match "{name}":\n{lines}\n\nWhich one did you mean?'
 
 
-def _resolve_author(name: str) -> tuple[str | None, str | None]:
-    """Look up the canonical author_name in v_faculty_full.
+def _resolve_author(name: str) -> tuple[str | None, str | None, str | None]:
+    """Look up the canonical author_name and department in v_faculty_full.
 
-    Returns (author_name, error_msg). One of them is always None.
+    Returns (author_name, department, error_msg). error_msg is None on success.
+    department is the full dept name (e.g. 'Civil Engineering') used to anchor
+    publication searches so we don't mix papers from same-named faculty.
     """
     q = _esc(name)
     rows = execute_sql(
-        f"SELECT author_name FROM v_faculty_full "
+        f"SELECT author_name, department FROM v_faculty_full "
         f"WHERE similarity(author_name, '{q}') > 0.15 OR author_name ILIKE '%{q}%' "
         f"ORDER BY similarity(author_name, '{q}') DESC LIMIT 1"
     )
     if rows is None:
-        return None, DB_DOWN_MSG
+        return None, None, DB_DOWN_MSG
     if isinstance(rows, dict):
         if rows.get("unavailable"):
-            return None, DB_DOWN_MSG
-        return None, None  # unknown error → fall through to LLM
+            return None, None, DB_DOWN_MSG
+        return None, None, None  # unknown error → fall through to LLM
     if not rows:
-        return None, f'No faculty matched "{name}".'
-    return rows[0].get("author_name"), None
+        return None, None, f'No faculty matched "{name}".'
+    return rows[0].get("author_name"), rows[0].get("department"), None
 
 
 def _handle_top_faculty(args: dict) -> str | None:
@@ -438,15 +583,120 @@ def _handle_top_faculty(args: dict) -> str | None:
     return f"{header}\n{lines}"
 
 
-def _handle_yearly_count(args: dict) -> str | None:
-    year = args["year"]
+def _handle_compare_years(args: dict) -> str | None:
+    y1, y2 = args["year1"], args["year2"]
     rows = execute_sql(
-        f"SELECT COUNT(*)::int AS cnt FROM publications WHERE year = {year}"
+        f"SELECT year, COUNT(*)::int AS total, "
+        f"COUNT(*) FILTER (WHERE scs_citations IS NOT NULL)::int AS scopus, "
+        f"COUNT(*) FILTER (WHERE wos_citations_pub IS NOT NULL)::int AS wos, "
+        f"COUNT(*) FILTER (WHERE is_sci = TRUE)::int AS sci "
+        f"FROM publications WHERE year IN ({y1}, {y2}) GROUP BY year ORDER BY year"
     )
     err = _fail(rows)
     if err:
         return err
-    return f"**{rows[0]['cnt']}** publications in {year}."
+    data = {r["year"]: r for r in rows}
+    r1 = data.get(y1, {"total": 0, "scopus": 0, "wos": 0, "sci": 0})
+    r2 = data.get(y2, {"total": 0, "scopus": 0, "wos": 0, "sci": 0})
+    diff = r2["total"] - r1["total"]
+    pct = round(abs(diff) / r1["total"] * 100, 1) if r1["total"] else 0
+    if diff > 0:
+        verdict = f"**{y2}** was better with {diff} more publications ({pct}% growth)."
+    elif diff < 0:
+        verdict = f"**{y1}** was better with {abs(diff)} more publications ({pct}% decline from {y1} to {y2})."
+    else:
+        verdict = f"Both years had the same number of publications."
+    return (
+        f"**{y1}**: {r1['total']} pubs (Scopus: {r1['scopus']}, WoS: {r1['wos']}, SCI: {r1['sci']})\n"
+        f"**{y2}**: {r2['total']} pubs (Scopus: {r2['scopus']}, WoS: {r2['wos']}, SCI: {r2['sci']})\n\n"
+        f"{verdict}"
+    )
+
+
+def _handle_best_year(_args: dict) -> str | None:
+    rows = execute_sql(
+        "SELECT year, COUNT(*)::int AS total FROM publications "
+        "WHERE year BETWEEN 2018 AND 2026 GROUP BY year ORDER BY total DESC LIMIT 5"
+    )
+    err = _fail(rows)
+    if err:
+        return err
+    best = rows[0]
+    others = "\n".join(
+        f"  {i + 2}. {r['year']}: {r['total']} pubs" for i, r in enumerate(rows[1:])
+    )
+    return (
+        f"**{best['year']}** had the most publications: **{best['total']}**.\n\n"
+        f"Top 5 years:\n  1. {best['year']}: {best['total']} pubs\n{others}"
+    )
+
+
+def _handle_year_trend(_args: dict) -> str | None:
+    rows = execute_sql(
+        "SELECT year, COUNT(*)::int AS total FROM publications "
+        "WHERE year BETWEEN 2018 AND 2026 GROUP BY year ORDER BY year"
+    )
+    err = _fail(rows)
+    if err:
+        return err
+    lines = "\n".join(
+        f"  {r['year']}: **{r['total']}** pubs" for r in rows
+    )
+    return f"Publications by year:\n{lines}"
+
+
+def _handle_year_range(args: dict) -> str | None:
+    y1, y2 = args["year1"], args["year2"]
+    rows = execute_sql(
+        f"SELECT year, COUNT(*)::int AS total FROM publications "
+        f"WHERE year BETWEEN {y1} AND {y2} GROUP BY year ORDER BY year"
+    )
+    err = _fail(rows)
+    if err:
+        return err
+    total = sum(r["total"] for r in rows)
+    lines = "\n".join(f"  {r['year']}: **{r['total']}**" for r in rows)
+    return f"Publications from {y1} to {y2} (total: **{total}**):\n{lines}"
+
+
+def _handle_dept_year_count(args: dict) -> str | None:
+    dept = args["dept"]
+    year = args["year"]
+    where = _pub_dept_where(dept)
+    rows = execute_sql(
+        f"SELECT COUNT(*)::int AS total, "
+        f"COUNT(*) FILTER (WHERE scs_citations IS NOT NULL)::int AS scopus, "
+        f"COUNT(*) FILTER (WHERE wos_citations_pub IS NOT NULL)::int AS wos "
+        f"FROM publications WHERE year = {year} AND {where}"
+    )
+    err = _fail(rows)
+    if err:
+        return err
+    r = rows[0]
+    return (
+        f"**{r['total']}** publications from **{dept}** in {year} "
+        f"(Scopus: {r['scopus']}, WoS: {r['wos']})."
+    )
+
+
+def _handle_yearly_count(args: dict) -> str | None:
+    year = args["year"]
+    rows = execute_sql(
+        f"SELECT "
+        f"COUNT(*)::int AS total, "
+        f"COUNT(*) FILTER (WHERE scs_citations IS NOT NULL)::int AS scopus, "
+        f"COUNT(*) FILTER (WHERE wos_citations_pub IS NOT NULL)::int AS wos, "
+        f"COUNT(*) FILTER (WHERE is_sci = TRUE)::int AS sci "
+        f"FROM publications WHERE year = {year}"
+    )
+    err = _fail(rows)
+    if err:
+        return err
+    r = rows[0]
+    return (
+        f"**{r['total']}** publications in {year} | "
+        f"Scopus: {r['scopus']}, WoS: {r['wos']}, SCI: {r['sci']}."
+    )
 
 
 def _handle_yoy_total(_args: dict) -> str | None:
@@ -596,17 +846,25 @@ def _query_pubs_by_author(
     author_name: str,
     qrank: str | None = None,
     year: int | None = None,
+    department: str | None = None,
     limit: int = 30,
 ) -> Any:
-    """Find publications by an author via publications.authors text match.
+    """Find publications by a KLE faculty member.
 
-    Bypasses the faculty_publications join (which the schema warns is
-    incomplete) — uses pg_trgm + ILIKE on the publications.authors column.
+    Uses home_authors (KLE-normalized, semicolon-separated) — NOT authors.
+    The authors field stores external Scopus names which have inconsistent
+    formatting: "M R Patil." vs "Patil M R" vs "M R Pati." (truncated).
+    home_authors is always in canonical "Firstname Lastname" or "Lastname F R"
+    format and matches v_faculty_full.author_name exactly.
+
+    department filter on home_author_department anchors results to the
+    specific faculty when multiple people share the same name.
     """
     a = _esc(author_name)
-    filters = [
-        f"(similarity(p.authors, '{a}') > 0.15 OR p.authors ILIKE '%{a}%')"
-    ]
+    filters = [f"p.home_authors ILIKE '%{a}%'"]
+    if department:
+        d = _esc(department)
+        filters.append(f"p.home_author_department ILIKE '%{d}%'")
     if qrank:
         filters.append(f"p.q_rank_scopus = '{_esc(qrank)}'")
     if year:
@@ -625,13 +883,13 @@ def _handle_faculty_qrank_year(args: dict) -> str | None:
     qrank = args["qrank"]
     year = args.get("year")
 
-    author, err = _resolve_author(name)
+    author, dept, err = _resolve_author(name)
     if err:
         return err
     if not author:
         return f'No faculty matched "{name}".'
 
-    rows = _query_pubs_by_author(author, qrank=qrank, year=year, limit=30)
+    rows = _query_pubs_by_author(author, qrank=qrank, year=year, department=dept, limit=30)
     err = _fail(rows)
     scope = f" in {year}" if year else ""
 
@@ -671,20 +929,21 @@ def _handle_faculty_pubs_list(args: dict) -> str | None:
     name = args["name"]
     year = args.get("year")
 
-    author, err = _resolve_author(name)
+    author, dept, err = _resolve_author(name)
     if err:
         return err
     if not author:
         return f'No faculty matched "{name}".'
 
-    rows = _query_pubs_by_author(author, year=year, limit=30)
+    rows = _query_pubs_by_author(author, year=year, department=dept, limit=30)
     err = _fail(rows)
     if err:
         return err
 
     scope = f" in {year}" if year else ""
+    dept_note = f" ({dept})" if dept else ""
     header = (
-        f"Publications by **{author}**{scope} "
+        f"Publications by **{author}**{dept_note}{scope} "
         f"({len(rows)}{' shown, more available' if len(rows) >= 30 else ''}):"
     )
     lines = [
@@ -719,6 +978,50 @@ def _handle_top_journals(args: dict) -> str | None:
     return f"Top {n} journals by publication count:\n{lines}"
 
 
+def _handle_paper_authors(args: dict) -> str | None:
+    title = args["title"]
+    want_corresponding = args.get("corresponding", False)
+    t = _esc(title)
+    rows = execute_sql(
+        f"SELECT title, authors, home_authors, author_address, staff_ria_user_id "
+        f"FROM publications "
+        f"WHERE similarity(title, '{t}') > 0.25 OR title ILIKE '%{t}%' "
+        f"ORDER BY similarity(title, '{t}') DESC LIMIT 1"
+    )
+    err = _fail(rows)
+    if err:
+        return err
+
+    r = rows[0]
+    pub_title = r.get("title") or title
+    authors_raw = r.get("home_authors") or r.get("authors") or ""
+    author_list = [a.strip() for a in re.split(r"[|;]", authors_raw) if a.strip()]
+
+    if not want_corresponding:
+        authors_fmt = "\n".join(f"{i + 1}. {a}" for i, a in enumerate(author_list))
+        return f"**Authors of:** _{pub_title}_\n\n{authors_fmt}"
+
+    # Identify corresponding author via staff_ria_user_id embedded as [id] in author_address
+    staff_id = r.get("staff_ria_user_id")
+    corresponding = None
+    addr_raw = r.get("author_address") or ""
+    if staff_id:
+        pattern = re.compile(rf"([^|]+)\[{staff_id}\]")
+        m = pattern.search(addr_raw)
+        if m:
+            corresponding = m.group(1).strip().rstrip(",").strip()
+    if not corresponding and author_list:
+        # Fallback: first listed KLE author is typically the submitter
+        corresponding = author_list[0]
+
+    authors_fmt = "\n".join(f"{i + 1}. {a}" for i, a in enumerate(author_list))
+    return (
+        f"**Corresponding author:** **{corresponding}**\n\n"
+        f"**Paper:** _{pub_title}_\n\n"
+        f"**All authors:**\n{authors_fmt}"
+    )
+
+
 def _handle_campus_unsupported(_args: dict) -> str:
     return (
         "Campus-level data (BVB / Belagavi / Bengaluru) isn't in the current "
@@ -740,7 +1043,14 @@ INTENTS: list[tuple[str, Callable[[str], dict | None], Callable[[dict], str | No
     # Paper-list intents must come before faculty_stats — both can match a name.
     ("faculty_pubs_list", _m_faculty_pubs_list, _handle_faculty_pubs_list),
     ("top_journals", _m_top_journals, _handle_top_journals),
+    ("paper_authors", _m_paper_authors, _handle_paper_authors),
     ("campus_unsupported", _m_campus_unsupported, _handle_campus_unsupported),
+    # Year comparison / range / trend MUST come before yearly_count (single year)
+    ("compare_years", _m_compare_years, _handle_compare_years),
+    ("best_year", _m_best_year, _handle_best_year),
+    ("year_trend", _m_year_trend, _handle_year_trend),
+    ("year_range", _m_year_range, _handle_year_range),
+    ("dept_year_count", _m_dept_year_count, _handle_dept_year_count),
     ("yearly_count", _m_yearly_count, _handle_yearly_count),
     ("faculty_stats", _m_faculty_stats, _handle_faculty_stats),
     # Last-resort: a bare name (e.g. "Patil M R") → faculty stats lookup.
@@ -776,6 +1086,41 @@ def _keyword_fallback(q: str) -> tuple[str | None, dict | None]:
     has_stats = bool(re.search(r"\b(?:stats?|statistics|info|information|details?|profile|about|performance|overview)\b", q_lower))
 
     # Priority-ordered keyword intent matching
+
+    # -1. Paper authors / corresponding author (keyword fallback)
+    has_author_ref = bool(re.search(r"\b(?:authors?|co[- ]authors?|corresponding[- ]author|who\s+wrote|who\s+published)\b", q_lower))
+    has_title_like = len(q.split()) > 4 and not has_year
+    if has_author_ref and has_title_like:
+        want_corresponding = bool(re.search(r"corresponding", q_lower))
+        # Strip author/query words to get the title fragment (order: longest prefix first)
+        title_fragment = re.sub(
+            r"^(?:who\s+(?:are|is|was|were)\s+(?:the\s+)?(?:corresponding[- ])?authors?\s+(?:of|for|in|on)\s*|"
+            r"who\s+(?:are|is|was|were)\s+(?:the\s+)?corresponding[- ]authors?\s+|"
+            r"who\s+(?:wrote|published|authored|created)\s+|"
+            r"(?:corresponding[- ])?authors?\s+(?:of|for)\s+)",
+            "", q, flags=_I,
+        ).strip().rstrip("?.!")
+        if title_fragment:
+            return "paper_authors", {"title": title_fragment, "corresponding": want_corresponding}
+
+    # 0. Two-year comparison (highest priority to avoid yearly_count mismatch)
+    year_list = re.findall(r"\b(20[12]\d)\b", q)
+    if len(year_list) >= 2:
+        y1, y2 = int(year_list[0]), int(year_list[1])
+        if y1 != y2:
+            if re.search(r"\b(?:to|through|from|between|–|-)\b", q, _I) and has_pub:
+                return "year_range", {"year1": min(y1, y2), "year2": max(y1, y2)}
+            return "compare_years", {"year1": min(y1, y2), "year2": max(y1, y2)}
+
+    # 0b. Best year / peak year
+    if re.search(r"\b(?:which|what)\s+year\b", q, _I) and re.search(
+        r"\b(?:best|most|highest|peak|productive|maximum|max)\b", q, _I
+    ):
+        return "best_year", {}
+
+    # 0c. Year trend / by year
+    if re.search(r"\b(?:by\s+year|per\s+year|year[- ]?wise|year[- ]?by[- ]?year)\b", q, _I) and has_pub:
+        return "year_trend", {}
 
     # 1. Q-rank distribution (dept-scoped or university-wide)
     if has_qrank_word and has_distribution:

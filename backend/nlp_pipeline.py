@@ -99,8 +99,9 @@ PHRASING_PATTERNS: list[tuple[re.Pattern, str]] = [
     # "how many papers/pubs were published in YEAR" → "publications in YEAR"
     (re.compile(r"how\s+many\s+(?:papers?|pubs?|publications?|articles?)\s+(?:were|are|got)\s+(?:published|released|produced)\s+(?:in|during)\s+(\d{4})\s*[?.!]*$", re.I),
      r"publications in \1"),
-    # "what is the h-index of X" → "stats on X"
-    (re.compile(r"what(?:'s|\s+is)\s+(?:the\s+)?(?:h[- ]?index|citation(?:s)?|publication\s+count)\s+(?:of|for)\s+(.+?)\s*[?.!]*$", re.I),
+    # "what is the h-index/publication count of X" → "stats on X"
+    # Also catches common typos: "wha is", "whats", "wat is"
+    (re.compile(r"wh(?:at?|ats?)(?:'s|\s+is|\s+are)?\s+(?:the\s+)?(?:h[- ]?index|citation(?:s)?|publication[s]?\s+count|pub(?:lication)?\s+count|number\s+of\s+(?:publications?|pubs?|papers?))\s+(?:of|for|by)\s+(.+?)\s*[?.!]*$", re.I),
      r"stats on \1"),
     # "tell me about X" / "info on X" / "details of X" → "stats on X"
     (re.compile(r"(?:tell\s+me\s+about|info(?:rmation)?\s+(?:on|about)|details?\s+(?:of|about|on)|describe)\s+(.+?)\s*[?.!]*$", re.I),
@@ -134,9 +135,15 @@ PHRASING_PATTERNS: list[tuple[re.Pattern, str]] = [
     # "how are publications trending" / "publication trend"
     (re.compile(r"(?:how\s+are\s+)?(?:publications?|papers?|research)\s+(?:trending|growing|changing|increasing|decreasing)\s*[?.!]*$", re.I),
      r"total publication count and yoy growth rate"),
-    # "compare 2024 and 2025" / "2024 vs 2025" → yoy
+    # "compare 2024 and 2025" / "2024 vs 2025" (generic) → yoy
     (re.compile(r"(?:compare|comparison|diff(?:erence)?)\s+(?:between\s+)?(?:20\d{2})\s+(?:and|vs\.?|versus|with)\s+(?:20\d{2})\s*[?.!]*$", re.I),
      r"total publication count and yoy growth rate"),
+    # "which year had most / best publications" → best year
+    (re.compile(r"which\s+year\s+(?:had|has|is|was)\s+(?:the\s+)?(?:most|best|highest|maximum|max)\s+(?:publications?|papers?|pubs?|research\s+output)\s*[?.!]*$", re.I),
+     r"best year for publications"),
+    # "publications by year" / "publication trend" / "year-wise breakdown"
+    (re.compile(r"(?:publications?|papers?|pubs?|research)\s+(?:by\s+year|per\s+year|year[- ]?wise|year[- ]?by[- ]?year(?!\s+growth))\s*[?.!]*$", re.I),
+     r"publications by year trend"),
 ]
 
 # ── Follow-up / pronoun patterns ───────────────────────────────────
@@ -161,6 +168,7 @@ class Entities:
     department: str | None = None
     faculty_name: str | None = None
     year: int | None = None
+    year2: int | None = None   # second year for comparison queries
     metric: str | None = None
     qrank: str | None = None
     limit: int | None = None
@@ -268,10 +276,12 @@ def extract_entities(query: str) -> Entities:
     """Extract structured entities from the user query."""
     entities = Entities()
 
-    # Year extraction
-    year_match = re.search(r"\b(20[12]\d)\b", query)
-    if year_match:
-        entities.year = int(year_match.group(1))
+    # Year extraction — capture up to two years for comparison queries
+    year_matches = re.findall(r"\b(20[12]\d)\b", query)
+    if year_matches:
+        entities.year = int(year_matches[0])
+        if len(year_matches) >= 2 and year_matches[1] != year_matches[0]:
+            entities.year2 = int(year_matches[1])
 
     # Q-rank extraction
     qrank_match = re.search(r"\b(q[1-4])\b", query, re.I)
