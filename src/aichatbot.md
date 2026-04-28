@@ -1,0 +1,2 @@
+for AI chatbot when i query form terminal ex : What's our total publication count and YoY growth?" 
+it should use @ria-dashboard\backend\nlp_pipeline.py file and write query to db and fetch the results . supabase db is running on http://127.0.0.1:54323/project/default. and show what query is executed in teminal . and check all the realtionships between tables are correct  . 
