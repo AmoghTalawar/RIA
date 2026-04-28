@@ -11,6 +11,10 @@ src/data/rawPublications.json
 # Added by code-review-graph
 .code-review-graph/
 
+# Added by graphify
+graphify-out/
+.github/copilot-instructions.md
+
 # Python virtualenvs / bytecode caches
 backend/venv/
 backend/.venv/
