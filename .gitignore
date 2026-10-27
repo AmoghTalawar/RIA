@@ -1,0 +1,49 @@
+node_modules
+dist
+.env
+.vite
+*.log
+.eslintcache
+.DS_Store
+.claude/
+src/data/rawPublications.json
+
+# Build & Tooling
+.code-review-graph/
+graphify-out/
+.github/copilot-instructions.md
+
+# Python — virtualenvs / bytecode caches / runtime
+backend/venv/
+backend/.venv/
+__pycache__/
+*.pyc
+backend/logs/
+
+# Supabase local runtime
+supabase/.temp/
+
+# OpenAlex generated outputs (re-created by map_faculty_openalex.py)
+openalex_mapping.json
+openalex_review.json
+openalex_review.csv
+openalex_not_found.csv
+openalex_works.json
+
+# Large binary / data files — not suitable for Git
+*.zip
+*.xlsx
+*.xls
+*.pdf
+*.pptx
+*.docx
+*.doc
+*.tmp
+*.lof
+*.lot
+
+# Heavy documentation image/asset directories
+docs/RIA/images/
+docs/RIA/prism-uploads/
+docs/RIA/chapters/
+docs/RIA/uploads/

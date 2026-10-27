@@ -1,0 +1,7 @@
+AGENTS.md
+CLAUDE.md
+.github/copilot-instructions.md
+graphify-out/
+node_modules/
+dist/
+backend/.venv/

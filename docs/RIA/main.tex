@@ -1,0 +1,83 @@
+\documentclass[12pt,a4paper,oneside]{report}
+\usepackage[top=.80in, bottom=.80in, left=1.1in, right=.80in, headsep=10pt ]{geometry}
+\usepackage{setspace}
+\usepackage[titletoc]{appendix}
+\usepackage{amsmath}    
+\usepackage{verbatim}   
+\usepackage{color}      
+ \usepackage{pgf-pie}
+
+\usepackage{graphicx}
+\usepackage{fancyhdr}
+\usepackage{setspace}
+\usepackage{multirow}
+\usepackage{subfigure}
+\usepackage[T1]{fontenc}
+\usepackage{algorithm}
+\usepackage{graphicx}
+\usepackage{fancyhdr}
+\usepackage{url}
+\usepackage{array}
+\usepackage{amssymb}
+\usepackage[utf8]{inputenc}
+\usepackage{titlesec}
+\usepackage{enumitem}
+
+\usepackage{tabu}
+\usepackage{hhline}
+\usepackage{ragged2e}
+\usepackage{pdfpages}
+\usepackage{amsmath}
+\usepackage{here}
+\usepackage{float}
+\usepackage[most]{tcolorbox}
+\usepackage[T1]{fontenc}
+\usepackage{algorithmic}
+\usepackage{tikz}
+\usepackage{pgfplots}\pgfplotsset{compat=1.5}
+\usepackage{pgfplots, pgfplotstable}
+\setlength{\headheight}{14.5pt}
+\usepackage{hyperref}
+
+
+\titleformat{\chapter}[display]
+{\normalfont\huge\bfseries}{\chaptertitlename\ \thechapter}{18pt}{\Huge\centering}
+\titlespacing*{\chapter}{0pt}{-15pt}{20pt}
+
+
+\begin{document}
+\pagenumbering{Alph}
+\onehalfspacing \input{certificate.tex}
+% \includepdf[pages=-]{chapters/Certificate-doc-temp-final (1).pdf}
+
+\pagenumbering{roman}
+\onehalfspacing \input{ack.tex}  
+
+\onehalfspacing \input{abstract.tex}
+\onehalfspacing \input{contents.tex}
+\onehalfspacing \input{Head_Footer.tex}
+\onehalfspacing \input{chapters/chap1.tex}
+\onehalfspacing \input{chapters/chap2.tex} 
+\onehalfspacing \input{chapters/chap3.tex}  
+\onehalfspacing \input{chapters/chap4.tex}   
+\onehalfspacing \input{chapters/chap5.tex}    
+\onehalfspacing \input{chapters/chap6.tex}   
+% \includepdf[pages=-]{chapters/PlagReport.pdf}
+
+% \bibliographystyle{unsrt}
+% \includepdf[pages=-]{chapters/PlagReport.pdf}
+
+\renewcommand{\bibname}{REFERENCES}
+
+\nocite{*}
+\bibliographystyle{unsrt}
+\bibliography{Bibliography}
+    % \addcontentsline{toc}{chapter}{REFERENCES}
+    
+    \begin{appendices}
+	\onehalfspacing \input{chapters/app.tex}
+   \end{appendices}
+
+   
+
+\end{document}
