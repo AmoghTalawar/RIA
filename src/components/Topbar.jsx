@@ -1,6 +1,6 @@
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Bell, Search, ChevronDown, Download, Printer, User, LogOut } from 'lucide-react';
-import { useAuth, ROLE_LABELS } from '../auth/AuthContext';
+import { User, LogOut } from 'lucide-react';
+import { useAuth } from '../auth/AuthContext';
 import AlertNotificationCenter from './AlertNotificationCenter';
 
 const pageTitles = {
@@ -9,6 +9,8 @@ const pageTitles = {
   '/faculty-dean': 'Faculty Dean Dashboard',
   '/executive-dean': 'Executive Dean Dashboard',
   '/university': 'University Dashboard',
+  '/profile': 'My Research Profile',
+  '/settings': 'Settings',
 };
 
 const pageSubtitles = {
@@ -17,6 +19,8 @@ const pageSubtitles = {
   '/faculty-dean': 'Multi-Department Comparison',
   '/executive-dean': 'Campus-Level Strategic View',
   '/university': 'University-Wide Research Intelligence',
+  '/profile': 'Your own publications, citations and metrics',
+  '/settings': 'Your account details and password',
 };
 
 export default function Topbar() {
@@ -35,43 +39,14 @@ export default function Topbar() {
           <p className="text-label text-smoke">{subtitle}</p>
         </div>
 
-        {/* Center: Search */}
-        <div className="hidden md:flex items-center flex-1 max-w-md mx-xl">
-          <div className="relative w-full">
-            <Search size={16} className="absolute left-md top-1/2 -translate-y-1/2 text-smoke" />
-            <input
-              type="text"
-              placeholder="Search publications, faculty, journals..."
-              className="w-full pl-10 pr-lg py-sm bg-fog border border-mist rounded-md text-body text-kle-dark placeholder:text-smoke focus:outline-none focus:border-kle-crimson"
-            />
-          </div>
-        </div>
-
-        {/* Right: Actions */}
+        {/* Right: notifications and who is signed in */}
         <div className="flex items-center gap-lg">
-          {/* Year Selector */}
-          <div className="hidden sm:flex items-center gap-xs bg-fog border border-mist rounded-md px-md py-sm cursor-pointer hover:border-ash">
-            <span className="text-body text-graphite">2025</span>
-            <ChevronDown size={14} className="text-smoke" />
-          </div>
-
-          {/* Export */}
-          <button className="hidden sm:flex items-center gap-xs text-body text-graphite hover:text-kle-crimson transition-colors">
-            <Download size={16} />
-            <span>Export</span>
-          </button>
-
-          {/* Print */}
-          <button className="hidden sm:flex items-center gap-xs text-body text-graphite hover:text-kle-crimson transition-colors">
-            <Printer size={16} />
-          </button>
-
           {/* Notifications */}
           <AlertNotificationCenter role={user?.role} />
 
-          {/* Logout */}
+          {/* Sign out */}
           <button
-            onClick={() => { logout(); navigate('/login', { replace: true }); }}
+            onClick={async () => { await logout(); navigate('/login', { replace: true }); }}
             className="flex items-center gap-xs text-body text-graphite hover:text-kle-crimson transition-colors"
             title="Sign Out"
           >
@@ -80,7 +55,7 @@ export default function Topbar() {
           </button>
 
           {/* User Avatar */}
-          <div className="flex items-center gap-sm cursor-pointer">
+          <div className="flex items-center gap-sm">
             <div className="w-8 h-8 bg-kle-crimson rounded-md flex items-center justify-center">
               <User size={16} className="text-white" />
             </div>
@@ -88,7 +63,6 @@ export default function Topbar() {
               <p className="text-body font-medium text-kle-dark">{user?.name || 'User'}</p>
               <p className="text-label text-smoke">{user?.department || ''}</p>
             </div>
-            <ChevronDown size={14} className="text-smoke hidden lg:block" />
           </div>
         </div>
       </div>

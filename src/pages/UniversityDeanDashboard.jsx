@@ -21,6 +21,8 @@ import HorizontalBarChart from '../components/HorizontalBarChart';
 import DataTable from '../components/DataTable';
 import AIInsightsPanel from '../components/AIInsightsPanel';
 import AIChatbot from '../components/AIChatbot';
+import SignalsPanel from '../components/SignalsPanel';
+import { detectSignals, askFocusFromSignal } from '../lib/signals';
 import PublicationListView from '../components/PublicationListView';
 import PublicationDetailView from '../components/PublicationDetailView';
 
@@ -474,6 +476,13 @@ export default function UniversityDeanDashboard() {
   /* ── Chart-to-chatbot focus state ── */
   const [chartFocus, setChartFocus] = useState(null); // { id, title, prompt }
 
+  /* ── Signals worth asking the AI about (derived from the loaded data) ── */
+  const signals = useMemo(() => (excelData ? detectSignals({
+    pubs: excelData.rawPublications,
+    faculty: excelData.allFaculty,
+    targets: excelData.universityTargets,
+  }) : []), [excelData]);
+
   /* ── Load Excel data on mount ── */
   useEffect(() => {
     let cancelled = false;
@@ -551,9 +560,7 @@ export default function UniversityDeanDashboard() {
   ];
 
   /* ── Chart click → chatbot helper ── */
-  const focusChart = (id, title, contextSummary, prompt) => {
-    setChartFocus({ id, title, contextSummary, prompt, ts: Date.now() });
-  };
+  const askAbout = (signal) => setChartFocus(askFocusFromSignal(signal));
 
   /* Animation variants */
   const tabVariants = {
@@ -648,12 +655,14 @@ export default function UniversityDeanDashboard() {
                     className="cursor-pointer"
                     title="Click to explore publications"
                   >
-                    <KPICard title="Publications" value={universityKPIs.totalPubs.value} subtitle="Click to explore →" trend={`+${universityKPIs.yoyGrowth.value}% YoY`} icon={FileText} />
+                    <KPICard title="Publications" value={universityKPIs.totalPubs.value} subtitle="Click to explore →" trend={`${universityKPIs.yoyGrowth.value >= 0 ? '+' : ''}${universityKPIs.yoyGrowth.value}% YoY`} icon={FileText} />
                   </div>
                   <KPICard title="Citations" value={universityKPIs.totalCitations.value} subtitle="Cumulative Scopus" icon={Users} />
                   <KPICard title="H-Index" value={universityKPIs.univHIndex.value} subtitle="University aggregate" icon={TrendingUp} />
                   <KPICard title="Q1 Publications %" value={universityKPIs.q1Percent.value} unit="%" subtitle="Top-quartile share" icon={Layers} />
                 </div>
+
+                <SignalsPanel signals={signals} onAsk={askAbout} />
 
                 {/* AI Strategic Briefing */}
                 {/* <AIInsightsPanel insights={strategicInsights} role="university-dean" /> */}

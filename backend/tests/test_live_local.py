@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 LIVE = os.environ.get("RIA_LIVE") == "1"
-URL = os.environ.get("SUPABASE_URL", "http://127.0.0.1:54321").rstrip("/")
+URL = os.environ.get("SUPABASE_URL", "http://127.0.0.1:55321").rstrip("/")
 ANON = os.environ.get("SUPABASE_ANON_KEY", "")
 SERVICE = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 PASSWORD = "KLE@2026"  # local demo password from scripts/create_auth_users.mjs
@@ -148,8 +148,8 @@ class LiveScopeTests(unittest.TestCase):
         expect = {
             "faculty": ("faculty", "Faculty", None, 232730, "Computer Science and Engineering"),
             "hod": ("hod", "HoD", None, 232716, "Computer Science and Engineering"),
-            "faculty_dean": ("faculty_dean", "Dean", "cluster", None, None),
-            "executive_dean": ("executive_dean", "Dean", "university", None, None),
+            "faculty_dean": ("faculty_dean", "Dean", "cluster", 232696, "Computer Science and Engineering"),
+            "executive_dean": ("executive_dean", "Dean", "university", 232858, "Mechanical Engineering"),
             "vc": ("vice_chancellor", "VC", None, 232799, "Electronics and Communication Engineering"),
         }
         for who, (persona, role, dean_scope, ria, dept) in expect.items():
@@ -340,16 +340,24 @@ class LiveToolGuardTests(unittest.TestCase):
         self.assertEqual(self.leaked(raw), [])
 
     # ── Faculty Dean ────────────────────────────────────────
-    def test_faculty_dean_is_confined_to_the_school_and_sees_no_names(self):
+    def test_faculty_dean_is_confined_to_the_school(self):
         school = self.school_departments("School of Computer Science and Engineering")
         outside = next(d.name for d in self.directory.departments if d.name not in school)
+        # named faculty of the Dean's own school: yes (Uday Kulkarni is CSE)
         for name, args in (("get_faculty_stats", {"faculty_name": "Uday Kulkarni"}),
                            ("search_publications_by_author", {"author_name": "Uday Kulkarni"}),
-                           ("compare_entities", {"entity_type": "faculty"})):
-            self.assertEqual(self.tool("faculty_dean", name, args, self.DRILL)[1]["status"], "forbidden", name)
+                           ("get_citations_by_year", {"faculty_name": "Uday Kulkarni"})):
+            raw, out = self.tool("faculty_dean", name, args)
+            self.assertEqual(out["status"], "success", (name, raw))
+        raw, out = self.tool("faculty_dean", "compare_entities", {"entity_type": "faculty"})
+        self.assertEqual(out["status"], "success", raw)
+        self.assertEqual({r["department"] for r in out["data"]} - set(school), set())
+        # someone outside the school: not found within scope
+        raw, out = self.tool("faculty_dean", "get_faculty_stats", {"faculty_name": "Girish Narayanrao Desai"})
+        self.assertEqual(out["status"], "forbidden", raw)
         raw, out = self.tool("faculty_dean", "get_department_stats", {"department": "Computer Science and Engineering"})
         self.assertEqual(out["status"], "success", raw)
-        self.assertEqual(self.leaked(raw), [])
+        self.assertTrue(out["top_5_by_citations"], raw)
         self.assertEqual(self.tool("faculty_dean", "get_department_stats", {"department": outside})[1]["status"], "forbidden")
         self.assertEqual(self.tool("faculty_dean", "count_qrank_publications", {"department": outside})[1]["status"], "forbidden")
         raw, out = self.tool("faculty_dean", "compare_entities", {"entity_type": "department"})
@@ -368,15 +376,108 @@ class LiveToolGuardTests(unittest.TestCase):
         self.assertEqual(out["summary"]["faculty_count"], in_school)
 
     # ── Executive Dean ──────────────────────────────────────
-    def test_executive_dean_names_need_an_explicit_drilldown(self):
+    def test_executive_dean_sees_any_individual_without_a_drilldown_phrase(self):
         raw, out = self.tool("executive_dean", "get_department_stats", {"department": "Physics"})
         self.assertEqual(out["status"], "success", raw)
-        self.assertEqual(self.leaked(raw), [])
-        self.assertEqual(self.tool("executive_dean", "get_faculty_stats", {"faculty_name": "Uday Kulkarni"})[1]["status"], "forbidden")
-        raw, out = self.tool("executive_dean", "get_department_stats", {"department": "Physics"}, self.DRILL)
         self.assertTrue(out["top_5_by_citations"], raw)
-        raw, out = self.tool("executive_dean", "get_faculty_stats", {"faculty_name": "Uday Kulkarni"}, self.DRILL)
+        for who in ("Uday Kulkarni", "Sunil Gurlahosur V", "Girish Narayanrao Desai"):
+            raw, out = self.tool("executive_dean", "get_faculty_stats", {"faculty_name": who})
+            self.assertEqual(out["status"], "success", raw)
+
+    # ── same question, same answer, every role (role testing) ──
+    def test_cse_figures_are_identical_for_every_role_that_can_see_cse(self):
+        # Role testing: "What's CSE's total h-index?" was 418 across 147 faculty for the VC and 370
+        # across 133 for everyone else; CSE's Q1 count was 81, 59 or 56 depending on the tool.
+        seen = {}
+        for who in ("faculty", "hod", "faculty_dean", "executive_dean", "vc"):
+            raw, out = self.tool(who, "get_department_stats", {"department": "CSE"})
+            self.assertEqual(out["status"], "success", (who, raw))
+            sm = out["summary"]
+            seen[who] = (sm["faculty_count"], sm["total_hindex"], sm["total_publications"], sm["total_q1_publications"])
+        self.assertEqual(len(set(seen.values())), 1, seen)
+        raw, q = self.tool("vc", "get_qrank_distribution", {"department": "CSE"})
+        self.assertEqual(q["q1_count"], seen["vc"][3], "department Q1 must match the Q-rank breakdown")
+
+    def test_a_shared_surname_is_ambiguous_for_every_role_that_can_look_people_up(self):
+        for who in ("hod", "faculty_dean", "executive_dean", "vc"):
+            for tool in ("get_faculty_stats", "get_citations_by_year"):
+                raw, out = self.tool(who, tool, {"faculty_name": "Dr. Patil"})
+                self.assertEqual(out["status"], "ambiguous", (who, tool, raw))
+                self.assertGreater(len(out["candidates"]), 1)
+
+    def test_campus_figures_match_the_dashboard(self):
+        # The VC dashboard shows Belagavi "1,020 papers, 14%"; the chatbot refused ("campus is not a
+        # field I can filter by") before get_campus_stats existed.
+        for who in ("faculty", "hod", "faculty_dean", "executive_dean", "vc"):
+            raw, out = self.tool(who, "get_campus_stats", {})
+            self.assertEqual(out["status"], "success", (who, raw))
+            by = {r["campus"]: r for r in out["data"]}
+            self.assertEqual(by["Belagavi"]["papers_only_this_campus"], 1020, who)
+            self.assertEqual(round(by["Belagavi"]["share_of_university_papers_percent"]), 14, who)
+            self.assertEqual(out["university_total_papers"], 7061)
+            self.assertGreater(by["Belagavi"]["papers_with_an_author_from_campus"], 1020)
+        raw, out = self.tool("hod", "get_campus_stats", {"campus": "Belgaum campus"})
+        self.assertTrue(out["data"][0]["top_departments_by_papers"], raw)
+        raw, out = self.tool("faculty", "get_campus_stats", {"campus": "Belgaum campus"})
+        self.assertNotIn("top_departments_by_papers", out["data"][0], raw)
+
+    def test_list_scopus_papers_from_belgaum_campus(self):
+        for who in ("executive_dean", "vc"):
+            raw, out = self.tool(who, "list_campus_publications", {"campus": "Belgaum campus", "limit": 5})
+            self.assertEqual(out["status"], "success", (who, raw))
+            self.assertEqual(out["returned"], 5)
+            self.assertGreater(out["total_matching"], 500)
+            self.assertEqual(len(out["data"]), 5)
+            self.assertTrue(all(r["title"] for r in out["data"]))
+        for who in ("faculty", "hod", "faculty_dean"):
+            raw, out = self.tool(who, "list_campus_publications", {"campus": "Belagavi"})
+            self.assertEqual(out["status"], "forbidden", (who, raw))
+
+    def test_belgaum_follow_up_flow(self):
+        """Compare campuses -> zoom into Belgaum -> who published the most there -> show their papers."""
+        for who in ("hod", "faculty_dean", "executive_dean", "vc"):
+            raw, out = self.tool(who, "get_campus_stats", {})
+            self.assertEqual(out["status"], "success", (who, raw))
+            raw, out = self.tool(who, "get_campus_stats", {"campus": "Belgaum"})
+            self.assertEqual(out["data"][0]["papers_only_this_campus"], 1020, who)
+        raw, out = self.tool("vc", "get_campus_top_authors", {"campus": "Belgaum", "limit": 5})
         self.assertEqual(out["status"], "success", raw)
+        self.assertEqual(len(out["data"]), 5)
+        name, dept, papers = out["data"][0][0], out["data"][0][1], out["data"][0][2]
+        self.assertEqual((name, papers), ("Rajashri N Khanai", 67))
+        self.assertGreater(out["faculty_with_papers"], 100)
+        self.assertEqual([r[2] for r in out["data"]], sorted((r[2] for r in out["data"]), reverse=True))
+        raw, out = self.tool("vc", "search_publications_by_author", {"author_name": name, "department": dept, "limit": 5})
+        self.assertEqual(out["status"], "success", raw)
+        self.assertGreaterEqual(out["count"], 1)
+
+    def test_campus_top_authors_respects_scope(self):
+        raw, out = self.tool("faculty", "get_campus_top_authors", {"campus": "Belagavi"})
+        self.assertEqual(out["status"], "forbidden", raw)
+        raw, out = self.tool("hod", "get_campus_top_authors", {"campus": "Belagavi"})
+        self.assertEqual(out["status"], "success", raw)
+        self.assertEqual({r[1] for r in out["data"]}, {"Computer Science and Engineering"})     # the HoD's own department
+        raw, out = self.tool("hod", "get_campus_top_authors", {"campus": "Belagavi", "department": "Physics"})
+        self.assertEqual(out["status"], "forbidden", raw)
+        raw, out = self.tool("faculty_dean", "get_campus_top_authors", {"campus": "Belagavi"})
+        self.assertEqual(out["status"], "success", raw)
+        school = set(self.school_departments("School of Computer Science and Engineering"))
+        self.assertTrue({r[1] for r in out["data"]} <= school)
+        raw, out = self.tool("executive_dean", "get_campus_top_authors", {"campus": "Belagavi", "department": "ECE"})
+        self.assertEqual({r[1] for r in out["data"]}, {"Electronics and Communication Engineering"})
+
+    def test_q1_ranking_by_department(self):
+        raw, out = self.tool("vc", "compare_entities", {"entity_type": "department", "metric": "q1_count", "top_n": 50})
+        self.assertEqual(out["status"], "success", raw)
+        q1 = [r["total_q1"] for r in out["data"]]
+        self.assertEqual(q1, sorted(q1, reverse=True))
+        self.assertGreater(len(out["data"]), 25)
+
+    def test_top_journals_for_a_department(self):
+        for who in ("faculty", "hod", "faculty_dean", "executive_dean", "vc"):
+            raw, out = self.tool(who, "get_top_journals", {"department": "CSE", "limit": 5})
+            self.assertEqual(out["status"], "success", (who, raw))
+            self.assertLessEqual(len(out["data"]), 5)
 
     # ── VC ──────────────────────────────────────────────────
     def test_vc_is_unrestricted(self):
@@ -496,15 +597,16 @@ class LiveToolGuardTests(unittest.TestCase):
         raw, out = self.tool("hod", "get_inactive_faculty", {"department": "Physics"})
         self.assertEqual(out["status"], "forbidden", raw)
 
-    def test_inactive_faculty_denied_for_faculty_and_faculty_dean(self):
-        for who in ("faculty", "faculty_dean"):
-            raw, out = self.tool(who, "get_inactive_faculty", {})
-            self.assertEqual(out["status"], "forbidden", (who, raw))
-
-    def test_inactive_faculty_executive_dean_needs_drilldown(self):
-        raw, out = self.tool("executive_dean", "get_inactive_faculty", {"department": "Physics"})
+    def test_inactive_faculty_denied_for_faculty(self):
+        raw, out = self.tool("faculty", "get_inactive_faculty", {})
         self.assertEqual(out["status"], "forbidden", raw)
-        raw, out = self.tool("executive_dean", "get_inactive_faculty", {"department": "Physics"}, self.DRILL)
+
+    def test_inactive_faculty_faculty_dean_own_school_executive_dean_any(self):
+        raw, out = self.tool("faculty_dean", "get_inactive_faculty", {})
+        self.assertEqual(out["status"], "success", raw)
+        raw, out = self.tool("faculty_dean", "get_inactive_faculty", {"department": "Physics"})
+        self.assertEqual(out["status"], "forbidden", raw)
+        raw, out = self.tool("executive_dean", "get_inactive_faculty", {"department": "Physics"})
         self.assertEqual(out["status"], "success", raw)
 
     # ── P5: get_faculty_stats' Q1-Q4 fix (junction, not staff_ria_user_id) ──
@@ -531,11 +633,11 @@ class LiveToolGuardTests(unittest.TestCase):
         raw, out = self.tool("faculty", "get_department_benchmark", {"faculty_name": "me"})
         self.assertEqual(out["status"], "success", raw)
         self.assertEqual(out["department"], "Computer Science and Engineering")
-        self.assertEqual(out["own"]["publications"], 112)
+        self.assertEqual(out["own"]["publications"], 147)   # v_faculty_full.total_pub_count (junction-based)
         self.assertGreater(out["department_average"]["publications"], 0)
         self.assertIn(out["vs_department_average"]["publications"], ("above", "below", "at"))
-        raw, out = self.tool("faculty_dean", "get_department_benchmark", {"faculty_name": "Anyone"})
-        self.assertEqual(out["status"], "forbidden", raw)
+        raw, out = self.tool("faculty_dean", "get_department_benchmark", {"faculty_name": "Girish Narayanrao Desai"})
+        self.assertEqual(out["status"], "forbidden", raw)   # outside the Faculty Dean's school
 
     # ── P5: get_citations_by_year ──────────────────────────────
     def test_citations_by_year_on_real_data(self):

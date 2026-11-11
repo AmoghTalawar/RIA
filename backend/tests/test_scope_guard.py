@@ -223,18 +223,26 @@ class HodRules(unittest.TestCase):
 
 
 class FacultyDeanRules(unittest.TestCase):
-    def test_never_individuals(self):
-        deny(self, FDEAN, "get_faculty_stats", {"faculty_name": "Uday Kulkarni"})
-        deny(self, FDEAN, "search_publications_by_author", {"author_name": "Uday Kulkarni"})
-        deny(self, FDEAN, "get_faculty_stats", {"faculty_name": "Uday Kulkarni"}, DRILL)   # drill-down does not apply
-        deny(self, FDEAN, "compare_entities", {"entity_type": "faculty"}, DRILL)
+    def test_individuals_inside_the_school_only(self):
+        # Role testing: "how many papers did <name> publish" was refused outright for the Faculty
+        # Dean. Policy now: any named faculty member of the Dean's OWN school, nobody outside it
+        # (the tool resolves the name only inside scope_departments).
+        for tool, key in (("get_faculty_stats", "faculty_name"), ("search_publications_by_author", "author_name"),
+                          ("get_citations_by_year", "faculty_name"), ("get_top_cited_publications", "faculty_name")):
+            d = allow(self, FDEAN, tool, {key: "Uday Kulkarni"})
+            self.assertEqual(sorted(d.args.get("scope_departments")), sorted([CSE, MCA]), tool)
+            self.assertNotIn("ria_user_id", d.args)
+        allow(self, FDEAN, "compare_entities", {"entity_type": "faculty"}, scope_departments=[CSE, MCA], include_names=True)
+        allow(self, FDEAN, "compare_entities", {"entity_type": "faculty", "department": "CSE"},
+              scope_departments=[CSE], include_names=True)
+        deny(self, FDEAN, "compare_entities", {"entity_type": "faculty", "department": "Physics"})
 
-    def test_department_stats_inside_the_school_without_names(self):
-        allow(self, FDEAN, "get_department_stats", {"department": "CSE"}, scope_departments=[CSE], include_names=False)
-        allow(self, FDEAN, "get_department_stats", {"department": "computer"}, scope_departments=[CSE, MCA], include_names=False)
+    def test_department_stats_inside_the_school_with_names(self):
+        allow(self, FDEAN, "get_department_stats", {"department": "CSE"}, scope_departments=[CSE], include_names=True)
+        allow(self, FDEAN, "get_department_stats", {"department": "computer"}, scope_departments=[CSE, MCA], include_names=True)
         allow(self, FDEAN, "get_department_stats", {"department": "School of Computer Science and Engineering"},
-              scope_departments=[CSE, MCA], include_names=False)
-        allow(self, FDEAN, "get_department_stats", {"department": ""}, scope_departments=[CSE, MCA], include_names=False)
+              scope_departments=[CSE, MCA], include_names=True)
+        allow(self, FDEAN, "get_department_stats", {"department": ""}, scope_departments=[CSE, MCA], include_names=True)
 
     def test_outside_the_school_is_denied(self):
         for text in ("Physics", "ECE", "School of Sciences", "Engineering", "%"):
@@ -245,7 +253,6 @@ class FacultyDeanRules(unittest.TestCase):
         allow(self, FDEAN, "compare_entities", {"entity_type": "department"}, scope_departments=[CSE, MCA], include_names=False)
         allow(self, FDEAN, "compare_entities", {"entity_type": "department", "entities": ["CSE"]}, scope_departments=[CSE])
         deny(self, FDEAN, "compare_entities", {"entity_type": "department", "entities": ["CSE", "Physics"]})
-        deny(self, FDEAN, "compare_entities", {"entity_type": "faculty"})
 
     def test_counts(self):
         d = allow(self, FDEAN, "count_qrank_publications", {"qrank": "Q1"})
@@ -257,23 +264,19 @@ class FacultyDeanRules(unittest.TestCase):
 
 
 class ExecutiveDeanRules(unittest.TestCase):
-    def test_names_hidden_by_default(self):
-        deny(self, EDEAN, "get_faculty_stats", {"faculty_name": "Uday Kulkarni"})
-        deny(self, EDEAN, "search_publications_by_author", {"author_name": "Uday Kulkarni"})
-        deny(self, EDEAN, "compare_entities", {"entity_type": "faculty"})
-        allow(self, EDEAN, "get_department_stats", {"department": "Physics"}, scope_departments=[PHY], include_names=False)
+    def test_any_individual_without_a_drilldown_phrase(self):
+        # Role testing: the Executive Dean refused "How many papers did Sunil Gurlahosur V publish
+        # this year?" unless the message said "drill down". Policy now: university-wide, any person.
+        for msg in ("", "what about their h-index?", DRILL):
+            d = allow(self, EDEAN, "get_faculty_stats", {"faculty_name": "Uday Kulkarni"}, msg)
+            self.assertNotIn("ria_user_id", d.args)
+            self.assertNotIn("scope_departments", d.args)
+        allow(self, EDEAN, "search_publications_by_author", {"author_name": "Uday Kulkarni"})
+        allow(self, EDEAN, "get_department_stats", {"department": "Physics"}, scope_departments=[PHY], include_names=True)
+        allow(self, EDEAN, "compare_entities", {"entity_type": "faculty"}, include_names=True)
+        allow(self, EDEAN, "compare_entities", {"entity_type": "faculty", "department": "CSE"},
+              scope_departments=[CSE], include_names=True)
         allow(self, EDEAN, "compare_entities", {"entity_type": "department"}, include_names=False)
-
-    def test_explicit_drilldown_unlocks_individuals(self):
-        d = allow(self, EDEAN, "get_faculty_stats", {"faculty_name": "Uday Kulkarni"}, DRILL)
-        self.assertNotIn("ria_user_id", d.args)
-        self.assertNotIn("scope_departments", d.args)
-        allow(self, EDEAN, "get_department_stats", {"department": "Physics"}, DRILL, scope_departments=[PHY], include_names=True)
-        allow(self, EDEAN, "compare_entities", {"entity_type": "faculty"}, DRILL, include_names=True)
-        allow(self, EDEAN, "get_faculty_stats", {"faculty_name": "X"}, "please go to faculty level for CSE")
-
-    def test_drilldown_is_per_message(self):
-        deny(self, EDEAN, "get_faculty_stats", {"faculty_name": "Uday Kulkarni"}, "what about their h-index?")
 
     def test_unknown_department_is_denied(self):
         deny(self, EDEAN, "get_department_stats", {"department": "%"})
@@ -284,19 +287,39 @@ class ViceChancellorRules(unittest.TestCase):
     def test_everything_unrestricted_but_whitelisted(self):
         for tool, args in (("get_faculty_stats", {"faculty_name": "Anyone"}),
                            ("search_publications_by_author", {"author_name": "Anyone"}),
-                           ("get_department_stats", {"department": "Physics"}),
                            ("count_qrank_publications", {"qrank": "Q1"}),
                            ("compare_entities", {"entity_type": "faculty"}),
                            ("compare_entities", {"entity_type": "institute"}),
                            ("get_yearly_stats", {"year": 2024}),
-                           ("get_qrank_distribution", {"department": "Physics"}),
-                           ("get_institute_summary", {"institute": "Physics"}),
                            ("get_university_overview", {})):
             d = allow(self, VC, tool, dict(args, ria_user_id=1, scope_departments=["x"],
                                           scope_institutes=["y"], include_names=False))
             for k in ("ria_user_id", "scope_departments", "include_names", "scope_institutes"):
                 self.assertNotIn(k, d.args)
             self.assertEqual(d.action, "allow")
+
+    def test_department_text_is_resolved_like_every_other_role(self):
+        # Role testing: "What's CSE's total h-index?" gave the VC 418 across 147 faculty and every
+        # other role 370 across 133 - the VC's raw "CSE" reached the tool's fuzzy ILIKE, which also
+        # matched the School of CSE's other department. The VC is unrestricted, but names resolve.
+        for tool in ("get_department_stats", "get_qrank_distribution", "count_qrank_publications",
+                     "get_department_trend", "get_top_journals", "get_inactive_faculty"):
+            d = allow(self, VC, tool, {"department": "CSE"}, scope_departments=[CSE])
+            self.assertNotIn("department", d.args, tool)
+        allow(self, VC, "compare_entities", {"entity_type": "department", "entities": ["CSE", "physics"]},
+              scope_departments=[CSE, PHY])
+        allow(self, VC, "compare_entities", {"entity_type": "faculty", "department": "CSE"}, scope_departments=[CSE])
+        allow(self, VC, "get_institute_summary", {"institute": "SoCSE"},
+              scope_institutes=["School of Computer Science and Engineering"])
+        allow(self, VC, "get_cross_department_collaboration", {"dept_a": "CSE", "dept_b": "physics"},
+              dept_a_scope=CSE, dept_b_scope=PHY)
+        allow(self, VC, "get_department_stats", {"department": "School of Sciences"}, scope_departments=[PHY, CHE, MAT])
+
+    def test_unknown_department_text_is_denied_not_widened(self):
+        for text in ("%", "nonsense", "x' OR '1'='1"):
+            deny(self, VC, "get_department_stats", {"department": text})
+            deny(self, VC, "count_qrank_publications", {"department": text})
+        deny(self, VC, "get_department_stats", {})
 
     def test_admin_shares_the_vc_persona(self):
         allow(self, scope("vice_chancellor", role_level="Admin"), "get_faculty_stats", {"faculty_name": "Anyone"})
@@ -407,10 +430,14 @@ class DepartmentTrendAndInactiveFacultyRules(unittest.TestCase):
             deny(self, HOD, "get_department_trend", {"department": text})
 
     # ── get_inactive_faculty: names, so HoD (own dept) / Executive Dean drilldown only ──
-    def test_faculty_and_faculty_dean_never_see_it(self):
+    def test_faculty_never_sees_it(self):
         deny(self, FACULTY, "get_inactive_faculty", {})
-        deny(self, FDEAN, "get_inactive_faculty", {})
-        deny(self, FDEAN, "get_inactive_faculty", {}, DRILL)   # drilldown never applies to Faculty Dean
+
+    def test_faculty_dean_own_school_only(self):
+        d = allow(self, FDEAN, "get_inactive_faculty", {})
+        self.assertEqual(sorted(d.args.get("scope_departments")), sorted([CSE, MCA]))
+        allow(self, FDEAN, "get_inactive_faculty", {"department": "CSE"}, scope_departments=[CSE])
+        deny(self, FDEAN, "get_inactive_faculty", {"department": "Physics"})
 
     def test_hod_own_department_only(self):
         for text in ("", "CSE", CSE):
@@ -421,9 +448,10 @@ class DepartmentTrendAndInactiveFacultyRules(unittest.TestCase):
     def test_hod_without_department_is_denied(self):
         deny(self, scope("hod", full_name="X"), "get_inactive_faculty", {})
 
-    def test_executive_dean_needs_the_drilldown_phrase(self):
-        deny(self, EDEAN, "get_inactive_faculty", {"department": "Physics"})
-        allow(self, EDEAN, "get_inactive_faculty", {"department": "Physics"}, DRILL)
+    def test_executive_dean_any_department(self):
+        allow(self, EDEAN, "get_inactive_faculty", {"department": "Physics"}, scope_departments=[PHY])
+        d = allow(self, EDEAN, "get_inactive_faculty", {})
+        self.assertNotIn("scope_departments", d.args)
 
     def test_wildcards_are_denied(self):
         for text in ("%", "x' OR '1'='1"):
@@ -449,25 +477,25 @@ class PerPersonToolRules(unittest.TestCase):
             self.assertEqual(d.args.get("scope_departments"), [CSE], tool)
             self.assertNotIn("ria_user_id", d.args)
 
-    def test_faculty_dean_never_sees_them(self):
+    def test_faculty_dean_own_school_scoped(self):
         for tool in self.TOOLS:
-            deny(self, FDEAN, tool, {"faculty_name": "Anyone"})
-            deny(self, FDEAN, tool, {"faculty_name": "Anyone"}, DRILL)
+            d = allow(self, FDEAN, tool, {"faculty_name": "Anyone"})
+            self.assertEqual(sorted(d.args.get("scope_departments")), sorted([CSE, MCA]), tool)
 
-    def test_executive_dean_needs_drilldown(self):
+    def test_executive_dean_unrestricted(self):
         for tool in self.TOOLS:
-            deny(self, EDEAN, tool, {"faculty_name": "Anyone"})
-            allow(self, EDEAN, tool, {"faculty_name": "Anyone"}, DRILL)
+            d = allow(self, EDEAN, tool, {"faculty_name": "Anyone"})
+            self.assertNotIn("scope_departments", d.args)
 
     def test_unlinked_faculty_is_denied(self):
         unlinked = scope("faculty", full_name="Nobody", department_name=CSE)
         for tool in self.TOOLS:
             deny(self, unlinked, tool, {"faculty_name": "me"})
 
-    def test_tools_are_not_offered_to_faculty_dean(self):
+    def test_tools_are_offered_to_both_deans(self):
         for tool in self.TOOLS:
-            self.assertNotIn(tool, scope_guard.allowed_tool_names(FDEAN))
-            self.assertNotIn(tool, scope_guard.allowed_tool_names(FDEAN, DRILL))
+            self.assertIn(tool, scope_guard.allowed_tool_names(FDEAN))
+            self.assertIn(tool, scope_guard.allowed_tool_names(EDEAN))
 
 
 class DeanClusterRules(unittest.TestCase):
@@ -481,7 +509,6 @@ class DeanClusterRules(unittest.TestCase):
             deny(self, FACULTY, tool, {})
             deny(self, HOD, tool, {})
             deny(self, EDEAN, tool, {})
-            deny(self, EDEAN, tool, {}, DRILL)   # drilldown never unlocks the dean cluster
         deny(self, FACULTY, "get_cross_department_collaboration", {"dept_a": "CSE", "dept_b": "MCA"})
         deny(self, HOD, "get_cross_department_collaboration", {"dept_a": "CSE", "dept_b": "MCA"})
         deny(self, EDEAN, "get_cross_department_collaboration", {"dept_a": "CSE", "dept_b": "MCA"})
@@ -534,6 +561,61 @@ class DeanClusterRules(unittest.TestCase):
         allow(self, VC, "get_cross_department_collaboration", {"dept_a": "CSE", "dept_b": "Physics"})
 
 
+class CampusToolRules(unittest.TestCase):
+    """get_campus_stats (everyone) and list_campus_publications (Executive Dean and VC)."""
+
+    def test_campus_stats_is_offered_to_every_role(self):
+        for sc in (FACULTY, HOD, FDEAN, EDEAN, VC):
+            allow(self, sc, "get_campus_stats", {"campus": "Belgaum campus"})
+
+    def test_department_breakdown_only_for_roles_that_may_compare_departments(self):
+        for sc, expected in ((FACULTY, False), (FDEAN, False), (HOD, True), (EDEAN, True), (VC, True)):
+            d = allow(self, sc, "get_campus_stats", {"campus": "Belagavi"}, include_departments=expected)
+            self.assertEqual(d.args.get("campus"), "Belagavi")
+
+    def test_paper_lists_are_executive_dean_and_vc_only(self):
+        allow(self, EDEAN, "list_campus_publications", {"campus": "Belagavi"})
+        allow(self, VC, "list_campus_publications", {"campus": "Belagavi"})
+        for sc in (FACULTY, HOD, FDEAN):
+            deny(self, sc, "list_campus_publications", {"campus": "Belagavi"})
+
+    def test_trusted_argument_cannot_be_supplied_by_the_model(self):
+        d = allow(self, FACULTY, "get_campus_stats", {"campus": "Belagavi", "include_departments": True},
+                  include_departments=False)
+        self.assertFalse(d.args["include_departments"])
+
+
+class CampusTopAuthorsRules(unittest.TestCase):
+    """get_campus_top_authors returns names, so it follows the inactive-faculty scoping."""
+
+    def test_faculty_never_has_it(self):
+        deny(self, FACULTY, "get_campus_top_authors", {"campus": "Belagavi"})
+
+    def test_hod_only_for_their_own_department(self):
+        d = allow(self, HOD, "get_campus_top_authors", {"campus": "Belgaum"})
+        self.assertEqual(d.args.get("scope_departments"), [CSE])
+        allow(self, HOD, "get_campus_top_authors", {"campus": "Belagavi", "department": "CSE"}, scope_departments=[CSE])
+        deny(self, HOD, "get_campus_top_authors", {"campus": "Belagavi", "department": "Physics"})
+
+    def test_faculty_dean_own_school_only(self):
+        d = allow(self, FDEAN, "get_campus_top_authors", {"campus": "Belagavi"})
+        self.assertEqual(sorted(d.args.get("scope_departments")), sorted([CSE, MCA]))
+        allow(self, FDEAN, "get_campus_top_authors", {"campus": "Belagavi", "department": "MCA"}, scope_departments=[MCA])
+        deny(self, FDEAN, "get_campus_top_authors", {"campus": "Belagavi", "department": "Physics"})
+
+    def test_executive_dean_and_vc_any_department(self):
+        d = allow(self, EDEAN, "get_campus_top_authors", {"campus": "Belagavi"})
+        self.assertNotIn("scope_departments", d.args)
+        allow(self, EDEAN, "get_campus_top_authors", {"campus": "Belagavi", "department": "ECE"}, scope_departments=[ECE])
+        d = allow(self, VC, "get_campus_top_authors", {"campus": "Belagavi"})
+        self.assertNotIn("scope_departments", d.args)
+        allow(self, VC, "get_campus_top_authors", {"campus": "Belagavi", "department": "physics"}, scope_departments=[PHY])
+
+    def test_unknown_department_text_is_denied(self):
+        for sc in (HOD, FDEAN, EDEAN, VC):
+            deny(self, sc, "get_campus_top_authors", {"campus": "Belagavi", "department": "%"})
+
+
 class GeneralRules(unittest.TestCase):
     def test_unknown_tool_and_persona_are_denied(self):
         for sc in (FACULTY, HOD, FDEAN, EDEAN, VC):
@@ -543,7 +625,7 @@ class GeneralRules(unittest.TestCase):
 
     def test_hidden_tools_are_denied_even_if_the_model_calls_them(self):
         deny(self, FACULTY, "compare_entities", {"entity_type": "department"})
-        deny(self, FDEAN, "get_faculty_stats", {"faculty_name": "x"})
+        deny(self, HOD, "get_institute_summary", {})
 
     def test_bad_arguments_are_denied(self):
         deny(self, HOD, "get_department_stats", {"department": "CSE", "top_n": "many"})
@@ -571,29 +653,29 @@ class GeneralRules(unittest.TestCase):
 
     def test_tools_shown_to_the_model(self):
         names = lambda sc, msg="": sorted(t["function"]["name"] for t in filter_tools(tools.TOOLS, sc, msg))
-        self.assertEqual(len(names(VC)), 17)
-        self.assertEqual(len(names(HOD)), 13)
+        self.assertEqual(len(names(VC)), 21)
+        self.assertEqual(len(names(HOD)), 16)
         self.assertNotIn("compare_entities", names(FACULTY))
         self.assertNotIn("get_institute_summary", names(FACULTY))
         self.assertNotIn("get_inactive_faculty", names(FACULTY))
-        self.assertEqual(len(names(FACULTY)), 11)
+        self.assertIn("get_top_journals", names(FACULTY))
+        self.assertEqual(len(names(FACULTY)), 13)
         self.assertNotIn("get_institute_summary", names(HOD))
         base = [
             "compare_entities", "count_qrank_publications", "get_department_stats", "get_yearly_stats",
             "get_qrank_distribution", "get_institute_summary", "get_university_overview", "get_department_trend",
+            "get_top_journals", "get_campus_stats",
+            # individual faculty: Executive Dean any person, Faculty Dean own school (guard-scoped)
+            "get_faculty_stats", "search_publications_by_author", "get_inactive_faculty",
+            "get_top_cited_publications", "get_department_benchmark", "get_citations_by_year",
+            "get_campus_top_authors",
         ]
-        self.assertEqual(names(EDEAN), sorted(base))
+        self.assertEqual(names(EDEAN), sorted(base + ["list_campus_publications"]))
+        self.assertNotIn("list_campus_publications", names(FDEAN))
         self.assertEqual(names(FDEAN), sorted(base + [
             "get_author_concentration", "get_cross_department_collaboration", "get_growth_acceleration",
         ]))
-        for sc in (FDEAN, EDEAN):
-            self.assertNotIn("get_inactive_faculty", names(sc))
-            self.assertNotIn("get_top_cited_publications", names(sc))
-        self.assertEqual(len(names(EDEAN, DRILL)), 14)
-        self.assertIn("get_inactive_faculty", names(EDEAN, DRILL))
-        self.assertIn("get_department_benchmark", names(EDEAN, DRILL))
-        self.assertNotIn("get_author_concentration", names(EDEAN, DRILL), "the dean cluster is Faculty Dean only")
-        self.assertEqual(len(names(FDEAN, DRILL)), 11, "faculty dean drilldown never unlocks individual tools")
+        self.assertEqual(names(EDEAN, DRILL), names(EDEAN), "the tool list no longer depends on the message")
         self.assertEqual(names(scope("vice_chancellor", persona_id="mystery")), [])
 
     def test_dean_cluster_tools_are_faculty_dean_only(self):
@@ -623,6 +705,11 @@ FAC_ROW = dict(ria_user_id=232730, faculty_id="fac-uday", author_name="Uday Kulk
                total_pub_count=112, scopus_citation=900, scopus_hindex=15, scopus_q1_count=30, wos_q1_count=5,
                journal_count=60, conference_count=50, wos_pub_count=40, wos_hindex=9, avg_citescore=3.1, avg_impfactor=2.2,
                match_score=1.0)
+
+
+AGG_ROW = dict(faculty_count=30, total_hindex=200, avg_hindex=6.67, pubs=500, cit=9000, q1=100, j=300, c=200)
+DEPT_ROW = dict(department=CSE, faculty_count=1, total_hindex=1, avg_hindex=1, total_publications=1, total_citations=1,
+                total_q1=1, total_journals=1, total_conferences=1, pubs_per_faculty=1)
 
 
 class FakeSQL:
@@ -660,11 +747,42 @@ class ToolSqlTests(unittest.TestCase):
         out = self.run_tool(tools.get_faculty_stats, FakeSQL([]), "Someone Elsewhere")
         self.assertEqual(out["status"], "no_match")
 
-    def test_unrestricted_faculty_stats_is_unchanged(self):
+    def test_unrestricted_faculty_stats_tries_the_exact_name_first(self):
         fake = FakeSQL([FAC_ROW], [])
-        self.run_tool(tools.get_faculty_stats, fake, "Uday Kulkarni")
-        self.assertIn("similarity(author_name, 'Uday Kulkarni') > 0.2 ORDER BY", fake.calls[0])
+        out = self.run_tool(tools.get_faculty_stats, fake, "Dr. Uday Kulkarni")
+        self.assertEqual(out["status"], "success")
+        self.assertIn("lower(author_name) = lower('Uday Kulkarni')", fake.calls[0])   # title stripped
         self.assertNotIn("department IN", fake.calls[0])
+
+    def test_a_surname_shared_by_several_people_is_always_ambiguous(self):
+        # Role testing: for "Dr. Patil's publication trend" the HoD was asked "which Patil?" but the
+        # VC silently got one Patil's numbers (the per-person tools took the best trigram match).
+        # Every per-person tool now resolves names the same way.
+        patils = [dict(_name="Pooja Patil", _dept=CSE, ria_user_id=1, faculty_id="a", author_name="Pooja Patil",
+                       department=CSE, _total=2),
+                  dict(_name="Uma S Patil", _dept=CSE, ria_user_id=2, faculty_id="b", author_name="Uma S Patil",
+                       department=CSE, _total=2)]
+        for fn in (tools.get_faculty_stats, tools.get_citations_by_year, tools.get_top_cited_publications,
+                   tools.get_department_benchmark, tools.search_publications_by_author):
+            fake = FakeSQL([], patils)
+            out = self.run_tool(fn, fake, "Dr. Patil")
+            self.assertEqual(out["status"], "ambiguous", fn.__name__)
+            self.assertEqual([c["name"] for c in out["candidates"]], ["Pooja Patil", "Uma S Patil"], fn.__name__)
+            self.assertIn("~* '\\mpatil\\M'", fake.calls[1], fn.__name__)
+
+    def test_a_unique_surname_resolves(self):
+        one = [dict(_name="Sunil Gurlahosur V", _dept=CSE, ria_user_id=9, faculty_id="s", author_name="Sunil Gurlahosur V",
+                    department=CSE, _total=1)]
+        fake = FakeSQL([], one, [])
+        out = self.run_tool(tools.get_citations_by_year, fake, "Gurlahosur")
+        self.assertNotEqual(out["status"], "ambiguous")
+        self.assertIn("fp.faculty_id = 's'", fake.calls[2])
+
+    def test_near_tied_similarity_matches_are_ambiguous(self):
+        rows = [dict(_name="A Kulkarni", _dept=CSE, _score=0.62, ria_user_id=1, faculty_id="a"),
+                dict(_name="B Kulkarni", _dept=PHY, _score=0.60, ria_user_id=2, faculty_id="b")]
+        out = self.run_tool(tools.get_citations_by_year, FakeSQL([], rows), "X Kulkarni")
+        self.assertEqual(out["status"], "ambiguous")
 
     def test_faculty_stats_qrank_breakdown_uses_the_junction_not_staff_ria_user_id(self):
         # staff_ria_user_id is only the FIRST resolvable author per paper and undercounts
@@ -687,9 +805,7 @@ class ToolSqlTests(unittest.TestCase):
         self.assertEqual(fake.calls, [])
 
     def test_department_stats_without_names(self):
-        agg = [dict(faculty_count=30, total_publications=500, total_citations=9000, total_hindex=200, total_q1=100,
-                    total_journals=300, total_conferences=200)]
-        fake = FakeSQL(agg)
+        fake = FakeSQL([AGG_ROW])
         out = self.run_tool(tools.get_department_stats, fake, "", scope_departments=[CSE], include_names=False)
         self.assertEqual(len(fake.calls), 1, "the top-N (names) query must not even run")
         self.assertEqual(out["summary"]["faculty_count"], 30)
@@ -697,18 +813,31 @@ class ToolSqlTests(unittest.TestCase):
         self.assertIn("names are not available", out["note"])
         self.assertIn(f"WHERE department IN ('{CSE}')", fake.calls[0])
 
+    def test_department_totals_count_distinct_papers(self):
+        # Role testing: CSE was 2,023 papers / 56 Q1 here (sum of per-faculty counts, so a paper
+        # with five CSE authors counted five times) and 1,465 / 59 in the Q-rank tools.
+        fake = FakeSQL([AGG_ROW])
+        out = self.run_tool(tools.get_department_stats, fake, "", scope_departments=[CSE, MCA], include_names=False)
+        sql = fake.calls[0]
+        self.assertIn("SELECT DISTINCT id, cit, q, t FROM", sql)
+        self.assertIn(f"WHERE dep IN ('{CSE}', '{MCA}')", sql)
+        self.assertNotIn("SUM(total_pub_count)", sql)
+        self.assertNotIn("SUM(scopus_q1_count)", sql)
+        self.assertEqual((out["summary"]["total_publications"], out["summary"]["total_q1_publications"]), (500, 100))
+        self.assertIn("counting", out)
+
     def test_department_stats_with_names(self):
-        agg = [dict(faculty_count=30, total_publications=500, total_citations=9000, total_hindex=200, total_q1=100,
-                    total_journals=300, total_conferences=200)]
         top = [dict(author_name="Uday Kulkarni", scopus_hindex=15, scopus_citation=900, total_pub_count=112, scopus_q1_count=30)]
-        out = self.run_tool(tools.get_department_stats, FakeSQL(agg, top), "", scope_departments=[CSE], include_names=True)
+        fake = FakeSQL([AGG_ROW], top)
+        out = self.run_tool(tools.get_department_stats, fake, "", scope_departments=[CSE], include_names=True)
         self.assertEqual(out["top_5_by_citations"][0]["name"], "Uday Kulkarni")
 
-    def test_unrestricted_department_stats_is_unchanged(self):
-        agg = [dict(faculty_count=1, total_publications=1, total_citations=1, total_hindex=1, total_q1=1, total_journals=1, total_conferences=1)]
-        fake = FakeSQL(agg, [])
-        self.run_tool(tools.get_department_stats, fake, "CSE")
+    def test_unrestricted_department_stats_resolves_names_first(self):
+        fake = FakeSQL([{"department": CSE}], [AGG_ROW], [])
+        out = self.run_tool(tools.get_department_stats, fake, "CSE")
         self.assertIn("department ILIKE '%Computer Science and Engineering%' OR short_name ILIKE", fake.calls[0])
+        self.assertIn(f"WHERE dep IN ('{CSE}')", fake.calls[1])
+        self.assertEqual(out["department_resolved"], CSE)
 
     def test_publication_counts_use_canonical_names_and_escape_them(self):
         fake = FakeSQL([{"cnt": 5}])
@@ -765,13 +894,25 @@ class ToolSqlTests(unittest.TestCase):
         self.assertEqual(out["status"], "forbidden")
 
     def test_compare_scoped_departments(self):
-        row = dict(department=CSE, faculty_count=1, total_publications=1, total_citations=1, total_hindex=1, total_q1=1,
-                   total_journals=1, total_conferences=1)
-        fake = FakeSQL([row])
+        fake = FakeSQL([DEPT_ROW])
         out = self.run_tool(tools.compare_entities, fake, "department", ["ignored"], "citations", 10, "", scope_departments=[CSE, MCA], include_names=False)
         self.assertEqual(out["status"], "success")
         self.assertIn(f"WHERE department IN ('{CSE}', '{MCA}') GROUP BY department", fake.calls[0])
+        self.assertIn("ORDER BY total_citations DESC", fake.calls[0])
         self.assertNotIn("ignored", fake.calls[0])
+
+    def test_rank_departments_by_q1_and_per_faculty(self):
+        # Role testing: "which department published the most Q1 papers?" and "rank departments by
+        # publications per faculty" must be one compare_entities call each.
+        for metric, col in (("q1_count", "total_q1"), ("publications_per_faculty", "pubs_per_faculty"),
+                            ("publications", "total_publications")):
+            fake = FakeSQL([DEPT_ROW])
+            out = self.run_tool(tools.compare_entities, fake, "department", None, metric, 50, "")
+            self.assertEqual(out["status"], "success", metric)
+            self.assertIn(f"ORDER BY {col} DESC", fake.calls[0])
+            self.assertIn("LIMIT 50", fake.calls[0])
+            self.assertIn("unnest(string_to_array(p.home_author_department, ';'))", fake.calls[0])
+        self.assertIn("publications_per_faculty", out["data"][0])
 
     def test_compare_faculty_without_names_is_forbidden(self):
         fake = FakeSQL()
@@ -827,10 +968,9 @@ class ToolSqlTests(unittest.TestCase):
     # ── get_institute_summary ────────────────────────────────
     # "name" is what get_institute_summary's SELECT * returns; "institute" is what
     # compare_entities' "name AS institute" alias returns. Both keys cover either caller.
-    INST_ROW = dict(name="School of Computer Science and Engineering",
-                    institute="School of Computer Science and Engineering",
-                    short_name="CSE", faculty_count=132, total_publications=2288, total_scopus_citations=13237,
-                    avg_scopus_hindex=2.9, total_q1_scopus=46, total_journals=634, total_conferences=1463)
+    INST_ROW = dict(institute="School of Computer Science and Engineering",
+                    short_name="CSE", faculty_count=132, total_hindex=380, avg_hindex=2.9, total_publications=1668,
+                    total_citations=7945, total_q1=81, total_journals=515, total_conferences=1076, pubs_per_faculty=11.35)
 
     def test_institute_summary_scoped(self):
         fake = FakeSQL([self.INST_ROW])
@@ -838,7 +978,8 @@ class ToolSqlTests(unittest.TestCase):
                             scope_institutes=["School of Computer Science and Engineering"])
         self.assertEqual(out["status"], "success")
         self.assertEqual(out["data"][0]["institute"], "School of Computer Science and Engineering")
-        self.assertIn("WHERE name = 'School of Computer Science and Engineering'", fake.calls[0])
+        self.assertIn("WHERE i.name = 'School of Computer Science and Engineering'", fake.calls[0])
+        self.assertNotIn("v_institute_summary", fake.calls[0])
 
     def test_institute_summary_empty_scope_is_forbidden(self):
         out = self.run_tool(tools.get_institute_summary, FakeSQL(), None, scope_institutes=[])
@@ -851,7 +992,7 @@ class ToolSqlTests(unittest.TestCase):
         self.assertEqual(len(out["data"]), 2)
         fake = FakeSQL([self.INST_ROW])
         out = self.run_tool(tools.get_institute_summary, fake, "CSE")
-        self.assertIn("name ILIKE '%CSE%' OR short_name ILIKE '%CSE%'", fake.calls[0])
+        self.assertIn("i.name ILIKE '%CSE%' OR i.short_name ILIKE '%CSE%'", fake.calls[0])
         self.assertEqual(out["data"][0]["avg_hindex"], 2.9)
 
     def test_institute_summary_no_match(self):
@@ -891,20 +1032,132 @@ class ToolSqlTests(unittest.TestCase):
         self.assertEqual(out["status"], "success")
         self.assertEqual(out["comparison_type"], "institute")
         self.assertEqual(out["data"][0]["institute"], "School of Computer Science and Engineering")
-        self.assertIn("ORDER BY total_scopus_citations DESC", fake.calls[0])
+        self.assertIn("ORDER BY total_citations DESC", fake.calls[0])
         self.assertIn("LIMIT 8", fake.calls[0])
 
     def test_compare_institutes_specific(self):
         fake = FakeSQL([self.INST_ROW])
         out = self.run_tool(tools.compare_entities, fake, "institute", ["CSE", "EEE"], "publications", 10, "")
         self.assertEqual(out["status"], "success")
-        self.assertIn("(name = 'CSE' OR short_name = 'CSE')", fake.calls[0])
+        self.assertIn("(i.name = 'CSE' OR i.short_name = 'CSE')", fake.calls[0])
         self.assertIn("ORDER BY total_publications DESC", fake.calls[0])
         self.assertNotIn("LIMIT", fake.calls[0])
 
     def test_compare_institutes_no_match(self):
         out = self.run_tool(tools.compare_entities, FakeSQL([]), "institute")
         self.assertEqual(out["status"], "no_match")
+
+    # ── campus tools ─────────────────────────────────────────
+    def test_campus_names_resolve(self):
+        for text, want in (("Belgaum campus", "Belagavi"), ("belagavi", "Belagavi"), ("BVB", "Hubballi"),
+                           ("Hubli", "Hubballi"), ("hubballi campus", "Hubballi"), ("Bangalore", "Bengaluru"),
+                           ("Mars", None), ("", None), (None, None)):
+            self.assertEqual(tools._resolve_campus(text), want, text)
+
+    def test_campus_stats_counts_each_campus_and_the_dashboard_figure(self):
+        row = dict(any_author=1174, only_this=1020, scopus_indexed=722, scopus_ranked=451, q1=155, q2=1, q3=1, q4=1,
+                   journals=1, conferences=1, scopus_citations=1)
+        fake = FakeSQL([{"n": 7061}], [row])
+        out = self.run_tool(tools.get_campus_stats, fake, "Belgaum campus")
+        r = out["data"][0]
+        self.assertEqual((r["campus"], r["papers_only_this_campus"], r["papers_with_an_author_from_campus"]),
+                         ("Belagavi", 1020, 1174))
+        self.assertEqual(r["papers_shared_with_other_campuses"], 154)
+        self.assertEqual(r["share_of_university_papers_percent"], 14.4)      # the dashboard's 14%
+        self.assertIn("%;Belagavi;%", fake.calls[1])
+        self.assertIn("trim(home_author_location) = 'Belagavi'", fake.calls[1])
+        self.assertEqual(len(fake.calls), 2, "no department query unless include_departments")
+
+    def test_campus_stats_returns_the_ratios_so_the_model_does_not_divide(self):
+        # Role testing Q09: the model worked out "Q1 about 34%" and "7.9 citations per paper" itself and later had to
+        # retract them as unverified. The tool now returns them, with the denominator named.
+        row = dict(any_author=1174, only_this=1020, scopus_indexed=722, scopus_ranked=451, q1=155, q2=94, q3=111,
+                   q4=91, journals=705, conferences=407, scopus_citations=5732)
+        r = self.run_tool(tools.get_campus_stats, FakeSQL([{"n": 7061}], [row]), "Belagavi")["data"][0]
+        self.assertEqual(r["q1_share_of_ranked_percent"], 34.4)               # 155 / 451
+        self.assertEqual(r["citations_per_scopus_paper"], 7.9)                # 5,732 / 722
+
+    def test_campus_stats_omits_a_ratio_with_no_denominator(self):
+        row = dict(any_author=2, only_this=2, scopus_indexed=0, scopus_ranked=0, q1=0, q2=0, q3=0, q4=0,
+                   journals=0, conferences=2, scopus_citations=0)
+        r = self.run_tool(tools.get_campus_stats, FakeSQL([{"n": 10}], [row]), "Bengaluru")["data"][0]
+        self.assertNotIn("q1_share_of_ranked_percent", r)
+        self.assertNotIn("citations_per_scopus_paper", r)
+
+    def test_campus_stats_all_campuses_and_year(self):
+        row = dict(any_author=1, only_this=1, scopus_indexed=1, scopus_ranked=1, q1=1, q2=0, q3=0, q4=0,
+                   journals=1, conferences=0, scopus_citations=1)
+        fake = FakeSQL([{"n": 10}], [row], [row], [row])
+        out = self.run_tool(tools.get_campus_stats, fake, None, 2024)
+        self.assertEqual([r["campus"] for r in out["data"]], ["Hubballi", "Belagavi", "Bengaluru"])
+        self.assertTrue(all("year = 2024" in c for c in fake.calls))
+
+    def test_unknown_campus_is_no_match_without_sql(self):
+        fake = FakeSQL()
+        out = self.run_tool(tools.get_campus_stats, fake, "Mars")
+        self.assertEqual(out["status"], "no_match")
+        out = self.run_tool(tools.list_campus_publications, fake, "Mars")
+        self.assertEqual(out["status"], "no_match")
+        self.assertEqual(fake.calls, [])
+
+    def test_list_campus_publications_filters(self):
+        row = dict(title="T", year=2026, source_publication="J", article_type="Journal", q_rank_scopus="Q1",
+                   scs_citations=2, home_author_location="Belagavi")
+        fake = FakeSQL([{"n": 155}], [row])
+        out = self.run_tool(tools.list_campus_publications, fake, "Belgaum", "q1", 2026, True, "journal", 5)
+        self.assertEqual((out["total_matching"], out["returned"]), (155, 1))
+        sql = fake.calls[1]
+        for part in ("%;Belagavi;%", "scs_citations IS NOT NULL", "q_rank_scopus = 'Q1'", "year = 2026",
+                     "article_type = 'Journal'", "LIMIT 5"):
+            self.assertIn(part, sql)
+        fake = FakeSQL([{"n": 0}], [])
+        self.run_tool(tools.list_campus_publications, fake, "Belagavi", "", None, False)
+        self.assertNotIn("scs_citations IS NOT NULL", fake.calls[0])
+
+    def test_list_campus_publications_rejects_bad_quartile(self):
+        out = self.run_tool(tools.list_campus_publications, FakeSQL(), "Belagavi", "Q9")
+        self.assertEqual(out["status"], "error")
+
+    def test_campus_top_authors_ranks_faculty_on_single_campus_papers(self):
+        rows = [dict(name="Rajashri N Khanai", department=CSE, papers=67, scopus=45, q1=7, cites=303),
+                dict(name="Sridhar Iyer", department=ECE, papers=34, scopus=27, q1=7, cites=254)]
+        fake = FakeSQL(rows, [{"n": 121}])
+        out = self.run_tool(tools.get_campus_top_authors, fake, "Belgaum campus")
+        self.assertEqual(out["data"][0], ["Rajashri N Khanai", CSE, 67, 45, 7, 303])
+        self.assertEqual((out["campus"], out["faculty_with_papers"], out["sorted_by"]), ("Belagavi", 121, "papers"))
+        self.assertEqual(out["columns"], ["name", "department", "papers", "scopus_indexed", "q1", "citations"])
+        sql = fake.calls[0]
+        self.assertIn("trim(p.home_author_location) = 'Belagavi'", sql)      # single-campus papers only
+        self.assertIn("faculty_publications fp", sql)
+        self.assertIn("ORDER BY papers DESC", sql)
+        self.assertIn("LIMIT 10", sql)
+        self.assertIn("search_publications_by_author", out["note"])
+
+    def test_campus_top_authors_filters_and_sorts(self):
+        fake = FakeSQL([dict(name="A", department=CSE, papers=1, scopus=1, q1=1, cites=1)], [{"n": 1}])
+        self.run_tool(tools.get_campus_top_authors, fake, "Belagavi", None, 2024, "q1", 500, scope_departments=[CSE, MCA])
+        sql = fake.calls[0]
+        self.assertIn("p.year = 2024", sql)
+        self.assertIn(f"d.name IN ('{CSE}', '{MCA}')", sql)
+        self.assertIn("ORDER BY q1 DESC", sql)
+        self.assertIn("LIMIT 25", sql)                                       # capped
+
+    def test_campus_top_authors_bad_input_runs_no_sql(self):
+        fake = FakeSQL()
+        self.assertEqual(self.run_tool(tools.get_campus_top_authors, fake, "Mars")["status"], "no_match")
+        self.assertEqual(self.run_tool(tools.get_campus_top_authors, fake, "Belagavi", metric="nonsense")["status"], "error")
+        self.assertEqual(self.run_tool(tools.get_campus_top_authors, fake, "Belagavi", scope_departments=[])["status"], "forbidden")
+        self.assertEqual(fake.calls, [])
+
+    def test_a_department_narrows_name_matching_but_never_widens_scope(self):
+        # "Show me their papers": the department printed in the previous answer tells two people apart
+        rows = [dict(_name="Pooja Patil", _dept=CSE, ria_user_id=1, faculty_id="a", author_name="Pooja Patil", department=CSE)]
+        fake = FakeSQL(rows, [])
+        self.run_tool(tools.search_publications_by_author, fake, "Pooja Patil", None, None, CSE, 5, "scopus",
+                      scope_departments=[CSE, MCA])
+        first = fake.calls[0]
+        self.assertIn(f"department IN ('{CSE}', '{MCA}')", first)             # the caller's scope is still there
+        self.assertIn(f"department ILIKE '%{CSE}%'", first)                    # ...and the department only narrows
 
     # ── get_department_trend ─────────────────────────────────
     def test_department_trend_explicit_years_is_one_query(self):
@@ -969,9 +1222,37 @@ class ToolSqlTests(unittest.TestCase):
         self.assertEqual(out["reference_year"], 2025)
         self.assertEqual(out["cutoff_year"], 2025)                            # 12 months -> 1 year back
         self.assertEqual(out["inactive_count"], 2)
-        self.assertEqual(out["inactive_faculty"][0], {"name": "A", "last_publication_year": None})
+        self.assertEqual(out["inactive_faculty"], [["A", None], ["B", 2019]])     # compact [name, last year] pairs
+        self.assertEqual(out["columns"], ["name", "last_publication_year"])
         self.assertIn("faculty_publications", fake.calls[2])
         self.assertIn(f"ILIKE '%{CSE}%'", fake.calls[1])          # "CSE" is expanded to the full name
+
+    def test_inactive_faculty_counts_list_every_department(self):
+        # 31 departments have faculty; the list used to stop at 25 while the totals covered all of them.
+        rows = [{"department": f"Dept {i}", "faculty": 10, "inactive": 31 - i, "never": 1} for i in range(31)]
+        out = self.run_tool(tools.get_inactive_faculty, FakeSQL([{"y": 2026}], rows), None, 24)
+        self.assertEqual(len(out["by_department"]), 31)
+        self.assertEqual(out["faculty_total"], 310)
+
+    def test_inactive_faculty_splits_never_published_from_older(self):
+        fake = FakeSQL([{"y": 2026}], [{"cnt": 4}],
+                       [{"author_name": "A", "last_pub_year": None}, {"author_name": "B", "last_pub_year": None},
+                        {"author_name": "C", "last_pub_year": 2019}])
+        out = self.run_tool(tools.get_inactive_faculty, fake, "CSE", 24)
+        self.assertEqual((out["inactive_count"], out["no_paper_on_record"], out["last_published_before_window"]), (3, 2, 1))
+
+    def test_inactive_faculty_rule_only_for_personas_with_the_tool(self):
+        with_tool = tools.build_ria_prompt(["get_inactive_faculty"])
+        self.assertIn("name only departments that appear in the result", with_tool)
+        self.assertNotIn("name only departments that appear in the result", tools.build_ria_prompt(["get_faculty_stats"]))
+
+    def test_inactive_faculty_boundary_year_is_active(self):
+        # 24 months, newest complete year 2025 -> window 2024..2025: a paper in 2024 keeps the person active
+        fake = FakeSQL([{"y": 2026}], [{"cnt": 1}], [])
+        out = self.run_tool(tools.get_inactive_faculty, fake, "CSE", 24)
+        self.assertEqual(out["cutoff_year"], 2024)
+        self.assertIn("last_pub_year < 2024", fake.calls[2])
+        self.assertNotIn("last_pub_year <= 2024", fake.calls[2])
 
     def test_inactive_faculty_department_scoped_uses_exact_match(self):
         fake = FakeSQL([{"y": 2026}], [{"cnt": 1}], [])
@@ -1001,9 +1282,26 @@ class ToolSqlTests(unittest.TestCase):
         self.assertEqual(out["status"], "forbidden")
         self.assertEqual(fake.calls, [])
 
-    def test_inactive_faculty_requires_a_department(self):
-        out = self.run_tool(tools.get_inactive_faculty, FakeSQL(), None)
-        self.assertEqual(out["status"], "error")
+    def test_inactive_faculty_without_a_department_gives_counts_per_department(self):
+        # Role testing: the VC's "Faculty with zero publications in 2 years?" had no department, got an error
+        # on the first call, then silently answered for ECE only (43k tokens). Several departments or the whole
+        # university now return counts per department - never thousands of names.
+        rows = [{"department": ECE, "faculty": 103, "inactive": 51, "never": 30}, {"department": CSE, "faculty": 133, "inactive": 49, "never": 28}]
+        out = self.run_tool(tools.get_inactive_faculty, FakeSQL([{"y": 2026}], rows), None, 24)
+        self.assertEqual(out["status"], "success")
+        self.assertEqual(out["by_department"], [[ECE, 51, 103, 30], [CSE, 49, 133, 28]])
+        self.assertEqual(out["no_paper_on_record_total"], 58)
+        self.assertIn("ALL the departments in scope", out["note"])
+        self.assertEqual((out["inactive_total"], out["faculty_total"]), (100, 236))
+        self.assertNotIn("inactive_faculty", out)
+        self.assertIn("one department", out["note"])
+
+    def test_inactive_faculty_for_a_school_is_counts_too(self):
+        rows = [{"department": CSE, "faculty": 133, "inactive": 49}, {"department": MCA, "faculty": 14, "inactive": 2}]
+        fake = FakeSQL([{"y": 2026}], rows)
+        out = self.run_tool(tools.get_inactive_faculty, fake, None, 12, scope_departments=[CSE, MCA])
+        self.assertIn("by_department", out)
+        self.assertIn(f"department IN ('{CSE}', '{MCA}')", fake.calls[1])
 
     def test_inactive_faculty_is_keyword_only(self):
         with self.assertRaises(TypeError):
@@ -1265,7 +1563,8 @@ class AgentLoopTests(unittest.TestCase):
     def setUp(self):
         scope_guard.clear_directory_cache()
         p = [mock.patch.object(scope_guard, "_directory_loader", return_value=DIR),
-             mock.patch.object(ria_agent, "_write_log_entry"), mock.patch.object(ria_agent, "_print_agent_trace")]
+             mock.patch.object(ria_agent, "_write_log_entry"), mock.patch.object(ria_agent, "_print_agent_trace"),
+             mock.patch.object(ria_agent, "_newest_data_year", return_value=2026)]
         for x in p:
             x.start()
             self.addCleanup(x.stop)
@@ -1284,12 +1583,19 @@ class AgentLoopTests(unittest.TestCase):
         return reply, seen, dev
 
     def test_model_only_sees_its_persona_tools(self):
-        expected = {"faculty": 11, "hod": 13, "faculty_dean": 11, "executive_dean": 8, "vice_chancellor": 17}
+        expected = {"faculty": 13, "hod": 16, "faculty_dean": 20, "executive_dean": 18, "vice_chancellor": 21}
         for sc in (FACULTY, HOD, FDEAN, EDEAN, VC):
             _, seen, _ = self.run_agent(sc, "hello", [_llm_reply("hi")])
             self.assertEqual(len(seen[0]["tools"]), expected[sc.persona_id], sc.persona_id)
-        _, seen, _ = self.run_agent(EDEAN, DRILL, [_llm_reply("hi")])
-        self.assertEqual(len(seen[0]["tools"]), 14)
+
+    def test_system_prompt_carries_the_date_and_profile_link(self):
+        _, seen, _ = self.run_agent(FDEAN, "hello", [_llm_reply("hi")])
+        system = seen[0]["messages"][0]["content"]
+        self.assertIn("TODAY: ", system)
+        self.assertIn("newest publication year in the database is 2026", system)
+        self.assertIn("Linked faculty profile: no", system)
+        _, seen, _ = self.run_agent(FACULTY, "hello", [_llm_reply("hi")])
+        self.assertIn("Linked faculty profile: yes", seen[0]["messages"][0]["content"])
 
     def test_forbidden_result_is_returned_to_the_model_and_no_sql_runs(self):
         fake = FakeSQL()
@@ -1339,12 +1645,10 @@ class AgentLoopTests(unittest.TestCase):
         self.run_agent(HOD, "uday", replies, fake)
         self.assertIn(f"department IN ('{CSE}')", fake.calls[0])
 
-    def test_guard_hides_names_from_the_faculty_dean(self):
-        agg = [dict(faculty_count=30, total_publications=500, total_citations=9000, total_hindex=200, total_q1=100,
-                    total_journals=300, total_conferences=200)]
-        fake = FakeSQL(agg)
-        replies = [_llm_reply(tool_calls=[_call("get_department_stats", {"department": "CSE", "top_n": 5})]), _llm_reply("done")]
-        _, seen, _ = self.run_agent(FDEAN, "how is CSE doing", replies, fake)
+    def test_guard_hides_names_from_a_hod_looking_at_another_department(self):
+        fake = FakeSQL([AGG_ROW])
+        replies = [_llm_reply(tool_calls=[_call("get_department_stats", {"department": "Physics", "top_n": 5})]), _llm_reply("done")]
+        _, seen, _ = self.run_agent(HOD, "how is Physics doing", replies, fake)
         tool_msg = json.loads([m for m in seen[1]["messages"] if m["role"] == "tool"][0]["content"])
         self.assertEqual(len(fake.calls), 1)
         self.assertFalse([k for k in tool_msg if k.startswith("top_")])

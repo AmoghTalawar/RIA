@@ -20,11 +20,13 @@ load_dotenv(Path(__file__).parent / ".env")
 
 from auth_scope import Scope, get_scope, require_roles  # noqa: E402
 from ria_agent import call_ria_agent, extract_pub_chat_parts  # noqa: E402
+from signal_context import build_signal_prompt  # noqa: E402
 from llm_provider import default_api_key  # noqa: E402
 from intent_router import route_intent  # noqa: E402
 from nlp_pipeline import normalize_query  # noqa: E402
 from persona.persona_loader import get_persona, list_all_personas  # noqa: E402
 from sql_tool import execute_sql  # noqa: E402
+from paper_details import paper_details  # noqa: E402
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -127,6 +129,24 @@ def publications(_scope: Scope = Depends(get_scope)):
     data = fetch_all_pages("publications", PUB_COLS)
     cache_set("publications", data)
     return JSONResponse(data)
+
+
+@app.get("/api/publications/{pub_id}")
+def publication_details(pub_id: int, _scope: Scope = Depends(get_scope)):
+    """One paper in full (abstract, authors, volume/pages/ISSN...) from the database, with no outside calls."""
+    result = paper_details(pub_id, outside=False)
+    if result is None:
+        raise HTTPException(status_code=404, detail="No such publication.")
+    return JSONResponse(result)
+
+
+@app.get("/api/publications/{pub_id}/outside")
+def publication_outside(pub_id: int, _scope: Scope = Depends(get_scope)):
+    """The slower part of the detail page: missing fields and live citation counts from OpenAlex / Crossref."""
+    result = paper_details(pub_id, outside=True)
+    if result is None:
+        raise HTTPException(status_code=404, detail="No such publication.")
+    return JSONResponse(result)
 
 
 @app.get("/api/faculty")
@@ -244,6 +264,8 @@ class ChatRequest(BaseModel):
     role_level: Optional[str] = None
     dean_scope: Optional[str] = None
     user_context: Optional[dict] = None
+    # VC dashboard "Ask AI" signal; honoured only for VC / Executive Dean / Admin (see signal_context.py).
+    context: Optional[dict] = None
     history: Optional[list[HistoryMessage]] = None
 
 
@@ -328,6 +350,7 @@ async def chat(
             api_key=api_key,
             chart_title=req.chart_title,
             conversation_history=conversation_history,
+            context_prompt=build_signal_prompt(req.context, scope.role_level, scope.persona_id),
             scope=scope,
             _dev=dev,
         )

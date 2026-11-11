@@ -378,6 +378,19 @@ function DeptDetailPanel({ dept, stats, onClose }) {
  *  AI Chat Panel — Groq-powered Q&A on publication data
  * ───────────────────────────────────────────── */
 
+/* Greeting for the Publication AI chat: says what it is scoped to, with the live paper count. */
+function buildGreeting(count, focus) {
+  if (focus) {
+    const label = focus.type === 'qrank' ? `${focus.parentValue} (${focus.value})` : focus.value;
+    const what = focus.type === 'year'
+      ? 'which departments and journals drove it, its Q-rank mix, top authors, or how it compares with other years'
+      : 'its Q-ranks, trends, top authors and journals, or how it compares with others';
+    return `You're looking at **${label}**. I can break down ${what}. What would you like to know?`;
+  }
+  const n = count ? `**${fmt(count)}**` : 'all';
+  return `Hi! I'm the Publication AI. I'm searching ${n} KLE Tech publications right now. Pick a question below or type your own.`;
+}
+
 function PublicationAIChat({ publications, deptStats, campusStats, yearStack, focus, onClearFocus }) {
   const [isOpen, setIsOpen] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
@@ -395,7 +408,8 @@ function PublicationAIChat({ publications, deptStats, campusStats, yearStack, fo
   const [tempKey, setTempKey] = useState('');
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([
-    { id: 1, text: "Hello! I'm your Publication AI Assistant. Ask me anything about KLE Tech's 6,500+ publications — departments, Q-ranks, trends, journals, or specific authors.", isBot: true },
+    // Shown text is built live by buildGreeting(); `text` is only the fallback kept in the history.
+    { id: 1, text: "Hi! I'm the Publication AI. Ask me about KLE Tech's publications.", isBot: true, isGreeting: true },
   ]);
   const messagesEndRef = useRef(null);
 
@@ -827,7 +841,7 @@ RULES:
                   </div>
                   <div className={`p-md rounded-2xl text-sm leading-relaxed ${msg.isBot ? 'bg-white border border-mist text-graphite rounded-tl-sm shadow-sm' : 'bg-gradient-to-br from-kle-crimson to-kle-dark text-white rounded-tr-sm shadow-md'}`}>
                     {msg.isBot ? (
-                      <ChatMarkdown text={msg.text} />
+                      <ChatMarkdown text={msg.isGreeting ? buildGreeting(publications.length, focus) : msg.text} />
                     ) : msg.text}
                   </div>
                 </div>

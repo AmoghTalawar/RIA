@@ -9,7 +9,10 @@ export default function DataTable({
   filterable = true,
   exportable = true,
   pageSize = 10,
-  onRowClick
+  onRowClick,
+  toolbarExtra = null,   // node rendered before the search box (e.g. a Filter button)
+  belowHeader = null,    // node rendered between the header and the table (e.g. a filter panel)
+  rowAction = null       // { icon: Component, title, onClick(row) } adds a trailing icon-button column
 }) {
   const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
   const [currentPage, setCurrentPage] = useState(1);
@@ -127,6 +130,8 @@ export default function DataTable({
         </div>
         
         <div className="flex items-center gap-md">
+          {toolbarExtra}
+
           {/* Search */}
           {filterable && (
             <input
@@ -163,6 +168,8 @@ export default function DataTable({
         </div>
       </div>
 
+      {belowHeader}
+
       {/* Table */}
       <div className="overflow-x-auto">
         <table className="data-table">
@@ -188,6 +195,7 @@ export default function DataTable({
                   </div>
                 </th>
               ))}
+              {rowAction && <th style={{ width: 48 }} aria-label={rowAction.title} />}
             </tr>
           </thead>
           <tbody>
@@ -202,12 +210,25 @@ export default function DataTable({
                     {renderCell(row, col)}
                   </td>
                 ))}
+                {rowAction && (
+                  <td>
+                    <button
+                      type="button"
+                      title={rowAction.title}
+                      aria-label={rowAction.title}
+                      onClick={(e) => { e.stopPropagation(); rowAction.onClick(row); }}
+                      className="p-sm rounded-md text-kle-crimson hover:bg-kle-crimson hover:text-white transition-colors"
+                    >
+                      <rowAction.icon size={16} />
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
             
             {paginatedData.length === 0 && (
               <tr>
-                <td colSpan={columns.length} className="text-center py-xl text-smoke">
+                <td colSpan={columns.length + (rowAction ? 1 : 0)} className="text-center py-xl text-smoke">
                   No data available
                 </td>
               </tr>

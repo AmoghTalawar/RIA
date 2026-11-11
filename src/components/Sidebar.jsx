@@ -14,6 +14,7 @@ import {
   Target,
   Award,
   ClipboardList,
+  UserCircle,
   ChevronRight,
 } from 'lucide-react';
 import { useAuth, ROLE_LABELS } from '../auth/AuthContext';
@@ -36,6 +37,7 @@ const deptSubNav = [
 ];
 
 const secondaryNav = [
+  { path: '/profile', label: 'My Profile', icon: UserCircle },
   { path: '/publications', label: 'Publications', icon: BookOpen },
   { path: '/analytics', label: 'Analytics', icon: TrendingUp },
   { path: '/reports', label: 'Reports', icon: FileText },
@@ -123,6 +125,9 @@ export default function Sidebar() {
           .filter((item) => {
             if (item.path === '/publications') {
               return user?.role === 'university-dean';
+            }
+            if (item.path === '/profile') {
+              return user?.role !== 'staff';   // Faculty's own dashboard is their profile
             }
             return true;
           })

@@ -48,7 +48,7 @@ import psycopg2
 from tqdm import tqdm
 
 DB_CONFIG = {
-    "host": "127.0.0.1", "port": 54322,
+    "host": "127.0.0.1", "port": 55322,
     "dbname": "postgres", "user": "postgres", "password": "postgres",
 }
 DEFAULT_XLSX = "Development\DB\RIA_Publications.xlsx"

@@ -1,4 +1,4 @@
-"""Slim intent router — year queries, paper authors, campus guard.
+"""Slim intent router — year queries, paper authors.
 
 Everything else falls through to the 6-tool RIA agent (ria_agent.py).
 """
@@ -39,13 +39,6 @@ def _fail(rows: Any) -> str | None:
 
 
 # ── Matchers ──────────────────────────────────────────────────────────
-
-def _m_campus_unsupported(q: str):
-    if re.search(r"\b(?:bvb|belagavi|bengaluru|bangalore|hubli|hubballi)\s+campus\b", q, _I) \
-       or re.search(r"\bcampus\s+(?:wise|level|split|break\s*down|comparison)\b", q, _I):
-        return {}
-    return None
-
 
 def _m_compare_years(q: str):
     m = re.search(
@@ -158,15 +151,6 @@ def _m_paper_authors(q: str):
 
 
 # ── Handlers ──────────────────────────────────────────────────────────
-
-def _handle_campus_unsupported(_args: dict) -> str:
-    return (
-        "Campus-level data (BVB / Belagavi / Bengaluru) isn't in the current "
-        "database schema — only **departments**, **schools/institutes**, and "
-        "**faculty** are tracked. Try asking about a specific school "
-        "(e.g., *School of Computer Science*) or department instead."
-    )
-
 
 def _handle_compare_years(args: dict) -> str | None:
     y1, y2 = args["year1"], args["year2"]
@@ -299,7 +283,6 @@ def _handle_paper_authors(args: dict) -> str | None:
 # ── Router ────────────────────────────────────────────────────────────
 
 INTENTS: list[tuple[str, Callable[[str], dict | None], Callable[[dict], str | None]]] = [
-    ("campus_unsupported", _m_campus_unsupported, _handle_campus_unsupported),
     ("compare_years",      _m_compare_years,      _handle_compare_years),
     ("best_year",          _m_best_year,           _handle_best_year),
     ("year_trend",         _m_year_trend,          _handle_year_trend),

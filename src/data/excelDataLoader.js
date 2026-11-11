@@ -85,8 +85,10 @@ export function aggregateUniversityData() {
   const maxHIndex = faculty.reduce((m, f) => Math.max(m, f.scopus_hindex || 0), 0);
 
   const sortedYears = Object.keys(yearCounts).sort();
-  const lastYr = sortedYears[sortedYears.length - 1];
-  const prevYr = sortedYears[sortedYears.length - 2];
+  // YoY compares the last two COMPLETE years; the calendar year in progress would always look like a drop.
+  const completeYears = sortedYears.filter((y) => Number(y) < new Date().getFullYear());
+  const lastYr = completeYears[completeYears.length - 1];
+  const prevYr = completeYears[completeYears.length - 2];
   const yoyGrowth =
     lastYr && prevYr && yearCounts[prevYr] > 0
       ? Math.round(((yearCounts[lastYr] - yearCounts[prevYr]) / yearCounts[prevYr]) * 100)
@@ -162,6 +164,7 @@ export function aggregateUniversityData() {
     universityPhDPipeline,
     peerComparison,
     rawPublications: pubs,
+    allFaculty: faculty,
     publicationsByYearSummary: yearCounts,
     availableYears,
   };

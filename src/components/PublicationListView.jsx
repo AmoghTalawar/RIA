@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import { cleanDepartments } from '../lib/signals';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ArrowLeft,
@@ -7,13 +8,16 @@ import {
   ChevronUp,
   ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Filter,
   X,
   BookOpen,
   Calendar,
 } from 'lucide-react';
 
-const ITEMS_PER_PAGE = 25;
+const PAGE_SIZES = [10, 25, 50, 100];
+const ALL_YEARS = 'all';
 
 const QUARTILE_OPTIONS = ['All', 'Q1', 'Q2', 'Q3', 'Q4', 'Unranked'];
 const QUARTILE_COLORS = {
@@ -32,6 +36,7 @@ const num = (v, def = 0) => {
 
 // Column key → publication field mapping (Supabase snake_case)
 const SORT_KEYS = {
+  year: 'year',
   title: 'title',
   source_publication: 'source_publication',
   q_rank_scopus: 'q_rank_scopus',
@@ -39,6 +44,16 @@ const SORT_KEYS = {
   home_author_department: 'home_author_department',
   home_authors: 'home_authors',
 };
+
+/** First KLE author, plus how many more ("Minal Salunke +2"). */
+function authorLabel(pub) {
+  const names = str(pub.home_authors).split(/[|;]/).map((n) => n.trim()).filter(Boolean);
+  if (names.length === 0) return 'NA';
+  return names.length > 1 ? `${names[0]} +${names.length - 1}` : names[0];
+}
+
+/** Distinct, real departments of a paper (the raw field repeats one per co-author). */
+const departmentLabel = (pub) => cleanDepartments(pub.home_author_department).join(', ') || 'NA';
 
 export default function PublicationListView({
   publications,
@@ -50,28 +65,31 @@ export default function PublicationListView({
 }) {
   const [search, setSearch] = useState('');
   const [qFilter, setQFilter] = useState('All');
-  const [sortKey, setSortKey] = useState('title');
-  const [sortDir, setSortDir] = useState('asc');
+  const [sortKey, setSortKey] = useState('year');
+  const [sortDir, setSortDir] = useState('desc');
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  // Show every publication by default; the year list narrows it. (The year handed in by the dashboard can be
+  // text, which used to match nothing and showed "0 total publications".)
+  const [yearSel, setYearSel] = useState(ALL_YEARS);
 
-  /* Filter publications by selected year */
+  /* Filter publications by the chosen year */
   const yearPubs = useMemo(
-    () => publications.filter((p) => num(p.year) === year),
-    [publications, year]
+    () => (yearSel === ALL_YEARS ? publications : publications.filter((p) => num(p.year) === yearSel)),
+    [publications, yearSel]
   );
 
-  /* Apply search + Q-rank filters */
+  /* Apply search + Q-rank filters. The search looks in title, journal, KLE authors, department, DOI and year. */
   const filtered = useMemo(() => {
     let result = yearPubs;
 
-    if (search) {
-      const q = search.toLowerCase();
-      result = result.filter(
-        (p) =>
-          str(p.title).toLowerCase().includes(q) ||
-          str(p.source_publication).toLowerCase().includes(q) ||
-          str(p.authors).toLowerCase().includes(q)
-      );
+    const terms = search.toLowerCase().split(/\s+/).filter(Boolean);
+    if (terms.length) {
+      result = result.filter((p) => {
+        const haystack = [p.title, p.source_publication, p.home_authors, cleanDepartments(p.home_author_department).join(' '), p.doi, p.year]
+          .map((v) => str(v).toLowerCase()).join(' | ');
+        return terms.every((t) => haystack.includes(t));      // every word must match, in any field
+      });
     }
 
     if (qFilter !== 'All') {
@@ -94,7 +112,8 @@ export default function PublicationListView({
       if (['cite_score', 'impact_factor', 'year'].includes(sortKey)) {
         va = num(a[sortKey]);
         vb = num(b[sortKey]);
-        return sortDir === 'asc' ? va - vb : vb - va;
+        if (va !== vb) return sortDir === 'asc' ? va - vb : vb - va;
+        return str(a.title).localeCompare(str(b.title));
       }
       return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
     });
@@ -102,9 +121,9 @@ export default function PublicationListView({
   }, [filtered, sortKey, sortDir]);
 
   /* Pagination */
-  const totalPages = Math.max(1, Math.ceil(sorted.length / ITEMS_PER_PAGE));
+  const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
   const safePage = Math.min(page, totalPages);
-  const paged = sorted.slice((safePage - 1) * ITEMS_PER_PAGE, safePage * ITEMS_PER_PAGE);
+  const paged = sorted.slice((safePage - 1) * pageSize, safePage * pageSize);
 
   const handleSort = (key) => {
     if (sortKey === key) {
@@ -125,12 +144,13 @@ export default function PublicationListView({
   };
 
   const columns = [
-    { key: 'title',                   label: 'Title',                width: 'w-[35%]' },
-    { key: 'source_publication',      label: 'Journal',              width: 'w-[20%]' },
-    { key: 'q_rank_scopus',           label: 'Q-Rank',               width: 'w-[8%]' },
-    { key: 'cite_score',              label: 'Cite Score',           width: 'w-[8%]' },
-    { key: 'home_author_department',  label: 'Department',           width: 'w-[15%]' },
-    { key: 'home_authors',            label: 'Corresponding Author', width: 'w-[14%]' },
+    { key: 'title',                   label: 'Title',       width: 'w-[32%]' },
+    { key: 'year',                    label: 'Year',        width: 'w-[6%]' },
+    { key: 'source_publication',      label: 'Journal',     width: 'w-[19%]' },
+    { key: 'q_rank_scopus',           label: 'Q-Rank',      width: 'w-[7%]' },
+    { key: 'cite_score',              label: 'Cite Score',  width: 'w-[8%]' },
+    { key: 'home_author_department',  label: 'Department',  width: 'w-[14%]' },
+    { key: 'home_authors',            label: 'KLE Authors', width: 'w-[14%]' },
   ];
 
   return (
@@ -166,7 +186,7 @@ export default function PublicationListView({
                 Publications
               </h2>
               <p className="text-label text-smoke">
-                {yearPubs.length} total publications · {filtered.length} shown
+                {publications.length.toLocaleString('en-IN')} publications in total · {filtered.length.toLocaleString('en-IN')} match{yearSel === ALL_YEARS ? '' : ` (${yearSel})`}
               </p>
             </div>
           </div>
@@ -175,17 +195,17 @@ export default function PublicationListView({
           <div className="flex items-center gap-sm">
             <Calendar size={16} className="text-smoke" />
             <select
-              value={year}
+              value={yearSel}
               onChange={(e) => {
-                onYearChange(Number(e.target.value));
+                const v = e.target.value;
+                setYearSel(v === ALL_YEARS ? ALL_YEARS : Number(v));
                 setPage(1);
-                setSearch('');
-                setQFilter('All');
               }}
               className="px-md py-sm bg-fog border border-mist rounded-md text-body text-kle-dark font-mono font-medium cursor-pointer focus:border-kle-crimson focus:ring-1 focus:ring-kle-crimson/20 outline-none transition-colors"
             >
+              <option value={ALL_YEARS}>All years</option>
               {[...availableYears].reverse().map((y) => (
-                <option key={y} value={y}>
+                <option key={y} value={Number(y)}>
                   {y}
                 </option>
               ))}
@@ -262,16 +282,20 @@ export default function PublicationListView({
                   <tr>
                     <td colSpan={columns.length} className="py-3xl text-center text-smoke text-body">
                       No publications found matching your filters.
+                      {(search || qFilter !== 'All' || yearSel !== ALL_YEARS) && (
+                        <button
+                          onClick={() => { setSearch(''); setQFilter('All'); setYearSel(ALL_YEARS); setPage(1); }}
+                          className="ml-sm text-kle-crimson hover:underline"
+                        >
+                          Clear filters
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ) : (
                   paged.map((pub, idx) => {
                     const qr = str(pub.q_rank_scopus);
                     const chipClass = QUARTILE_COLORS[qr] || QUARTILE_COLORS['Unranked'];
-                    const homeAuthors = str(pub.home_authors);
-                    const firstAuthor = homeAuthors
-                      ? homeAuthors.split(/[|;,]/)[0].trim()
-                      : str(pub.authors).split(/[|;,]/)[0]?.trim() || 'NA';
 
                     return (
                       <motion.tr
@@ -288,7 +312,10 @@ export default function PublicationListView({
                           </span>
                         </td>
                         <td className="py-sm px-md">
-                          <span className="text-label text-graphite line-clamp-1">
+                          <span className="font-mono text-sm text-graphite">{num(pub.year) || 'NA'}</span>
+                        </td>
+                        <td className="py-sm px-md">
+                          <span className="text-label text-graphite line-clamp-1" title={str(pub.source_publication)}>
                             {str(pub.source_publication) || 'NA'}
                           </span>
                         </td>
@@ -303,13 +330,13 @@ export default function PublicationListView({
                           </span>
                         </td>
                         <td className="py-sm px-md">
-                          <span className="text-label text-graphite line-clamp-1">
-                            {str(pub.home_author_department) || 'NA'}
+                          <span className="text-label text-graphite line-clamp-1" title={departmentLabel(pub)}>
+                            {departmentLabel(pub)}
                           </span>
                         </td>
                         <td className="py-sm px-md">
-                          <span className="text-label text-graphite line-clamp-1">
-                            {firstAuthor}
+                          <span className="text-label text-graphite line-clamp-1" title={str(pub.home_authors).replace(/;/g, ', ')}>
+                            {authorLabel(pub)}
                           </span>
                         </td>
                       </motion.tr>
@@ -322,56 +349,66 @@ export default function PublicationListView({
         </div>
 
         {/* Pagination */}
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between pt-md mt-md border-t border-mist">
-            <p className="text-label text-smoke">
-              Showing {(safePage - 1) * ITEMS_PER_PAGE + 1}–
-              {Math.min(safePage * ITEMS_PER_PAGE, sorted.length)} of{' '}
-              {sorted.length}
-            </p>
-            <div className="flex items-center gap-xs">
-              <button
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={safePage <= 1}
-                className="p-xs rounded-md hover:bg-fog disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-              >
-                <ChevronLeft size={18} />
-              </button>
-
-              {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
-                let pageNum;
-                if (totalPages <= 7) {
-                  pageNum = i + 1;
-                } else if (safePage <= 4) {
-                  pageNum = i + 1;
-                } else if (safePage >= totalPages - 3) {
-                  pageNum = totalPages - 6 + i;
-                } else {
-                  pageNum = safePage - 3 + i;
-                }
-                return (
-                  <button
-                    key={pageNum}
-                    onClick={() => setPage(pageNum)}
-                    className={`w-8 h-8 rounded-md text-label font-medium transition-colors ${
-                      safePage === pageNum
-                        ? 'bg-kle-crimson text-white'
-                        : 'text-graphite hover:bg-fog'
-                    }`}
-                  >
-                    {pageNum}
-                  </button>
-                );
-              })}
-
-              <button
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                disabled={safePage >= totalPages}
-                className="p-xs rounded-md hover:bg-fog disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-              >
-                <ChevronRight size={18} />
-              </button>
+        {sorted.length > 0 && (
+          <div className="flex items-center justify-between flex-wrap gap-md pt-md mt-md border-t border-mist">
+            <div className="flex items-center gap-md">
+              <p className="text-label text-smoke">
+                Showing {((safePage - 1) * pageSize + 1).toLocaleString('en-IN')}–
+                {Math.min(safePage * pageSize, sorted.length).toLocaleString('en-IN')} of{' '}
+                {sorted.length.toLocaleString('en-IN')}
+              </p>
+              <label className="flex items-center gap-xs text-label text-smoke">
+                Rows
+                <select
+                  value={pageSize}
+                  onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}
+                  className="px-sm py-xs bg-fog border border-mist rounded-md text-label text-kle-dark outline-none focus:border-kle-crimson"
+                >
+                  {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </label>
             </div>
+
+            {totalPages > 1 && (
+              <div className="flex items-center gap-xs">
+                <button onClick={() => setPage(1)} disabled={safePage <= 1} aria-label="First page"
+                  className="p-xs rounded-md hover:bg-fog disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                  <ChevronsLeft size={18} />
+                </button>
+                <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={safePage <= 1} aria-label="Previous page"
+                  className="p-xs rounded-md hover:bg-fog disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                  <ChevronLeft size={18} />
+                </button>
+
+                {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
+                  let pageNum;
+                  if (totalPages <= 7) pageNum = i + 1;
+                  else if (safePage <= 4) pageNum = i + 1;
+                  else if (safePage >= totalPages - 3) pageNum = totalPages - 6 + i;
+                  else pageNum = safePage - 3 + i;
+                  return (
+                    <button
+                      key={pageNum}
+                      onClick={() => setPage(pageNum)}
+                      aria-current={safePage === pageNum ? 'page' : undefined}
+                      className={`min-w-[2rem] h-8 px-xs rounded-md text-label font-medium transition-colors ${
+                        safePage === pageNum ? 'bg-kle-crimson text-white' : 'text-graphite hover:bg-fog'}`}
+                    >
+                      {pageNum}
+                    </button>
+                  );
+                })}
+
+                <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={safePage >= totalPages} aria-label="Next page"
+                  className="p-xs rounded-md hover:bg-fog disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                  <ChevronRight size={18} />
+                </button>
+                <button onClick={() => setPage(totalPages)} disabled={safePage >= totalPages} aria-label="Last page"
+                  className="p-xs rounded-md hover:bg-fog disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                  <ChevronsRight size={18} />
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>

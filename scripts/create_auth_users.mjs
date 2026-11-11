@@ -18,7 +18,7 @@ import { createClient } from '@supabase/supabase-js';
 
 // ── Config ────────────────────────────────────────────────────────────────
 // Local Supabase defaults (same for every local Supabase CLI project)
-const SUPABASE_URL      = process.env.VITE_SUPABASE_URL      || 'http://127.0.0.1:54321';
+const SUPABASE_URL      = process.env.VITE_SUPABASE_URL      || 'http://127.0.0.1:55321';
 const SERVICE_ROLE_KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY ||
   // Default local Supabase CLI service role key
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hj04zWl196z2-SBc0';
@@ -194,6 +194,15 @@ ON CONFLICT (id) DO UPDATE
         institute_id  = EXCLUDED.institute_id,
         dean_type     = EXCLUDED.dean_type,
         updated_at    = NOW();
+
+-- Link every demo account to its own faculty (research) record, so "my papers" and the My Profile page work:
+UPDATE ria.profiles p SET ria_user_id = f.ria_user_id, faculty_id = f.id
+FROM ria.faculty f
+WHERE (p.full_name = 'Uday Kulkarni'  AND f.ria_user_id = 232730)
+   OR (p.full_name = 'Narayan D G'    AND f.ria_user_id = 232716)
+   OR (p.full_name = 'Vijayalaxmi M'  AND f.ria_user_id = 232696)
+   OR (p.full_name = 'Tewari P G'     AND f.ria_user_id = 232858)
+   OR (p.full_name = 'Uma Mudengudi'  AND f.ria_user_id = 232799);
 
 SELECT p.full_name, p.role_level, p.dean_type, u.email
 FROM ria.profiles p

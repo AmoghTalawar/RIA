@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { MessageSquare, X, Send, Bot, Sparkles, User, Loader2, Key, Settings, BarChart3, XCircle, Trash2 } from 'lucide-react';
+import { MessageSquare, X, Send, Bot, Sparkles, User, Loader2, Key, Settings, BarChart3, XCircle, Trash2, Maximize2, Minimize2 } from 'lucide-react';
 import ChatMarkdown from './ChatMarkdown';
 import { useAuth } from '../auth/AuthContext';
 import { authedFetch, describeChatError, ChatAuthError, shortLabel } from '../lib/chatApi';
@@ -63,6 +63,12 @@ export default function AIChatbot({ contextData, chartFocus, onChartFocusHandled
 
   const [apiKey, setApiKey] = useState(localStorage.getItem('groq_api_key') || '');
   const [showSettings, setShowSettings] = useState(false);
+  // Wide mode gives tables room; the choice is remembered between visits.
+  const [expanded, setExpanded] = useState(() => localStorage.getItem('ria_chat_expanded') === '1');   // also set in Settings
+  const toggleExpanded = () => setExpanded((v) => {
+    localStorage.setItem('ria_chat_expanded', v ? '0' : '1');
+    return !v;
+  });
   const [tempKey, setTempKey] = useState(localStorage.getItem('groq_api_key') || '');
 
   const [messages, setMessages] = useState([WELCOME_MSG]);
@@ -105,13 +111,21 @@ export default function AIChatbot({ contextData, chartFocus, onChartFocusHandled
       title: chartFocus.title,
       contextSummary: chartFocus.contextSummary || '',
       prompt: chartFocus.prompt,
+      questions: chartFocus.questions || null,
+      signal: chartFocus.signal || null,
     });
 
     setIsOpen(true);
+    // The signal rides along with every message as context; the input box stays the user's own.
 
-    setMessages(prev => [...prev, {
+    // A new click replaces the previous focus message instead of stacking under it.
+    setMessages(prev => [...prev.filter(m => !m.isContextMsg), {
       id: Date.now(),
-      text: `**Chart focused: ${chartFocus.title}**\nI'm now ready to answer questions about this chart. Ask me anything related to the **${chartFocus.title}** data!`,
+      text: chartFocus.signal
+        ? `**${chartFocus.title}**
+I've loaded this insight as context. Ask me anything about it, or tap a suggestion.`
+        : `**Chart focused: ${chartFocus.title}**
+I'm now ready to answer questions about this chart. Ask me anything related to the **${chartFocus.title}** data!`,
       isBot: true,
       isContextMsg: true,
     }]);
@@ -156,7 +170,9 @@ export default function AIChatbot({ contextData, chartFocus, onChartFocusHandled
         signal: controller.signal,
         body: JSON.stringify({
           message: messageText,
-          chart_title: activeChartContext?.title || null,
+          // A dashboard signal is context, not a chart: don't tell the backend to scope to a "chart".
+          chart_title: activeChartContext?.signal ? null : (activeChartContext?.title || null),
+          context: activeChartContext?.signal || null,
           session_id: sessionId,
           history,
         }),
@@ -229,7 +245,9 @@ export default function AIChatbot({ contextData, chartFocus, onChartFocusHandled
     setInput('');
   };
 
-  const chartQuickActions = activeChartContext
+  const chartQuickActions = activeChartContext?.questions?.length
+    ? activeChartContext.questions.map(q => ({ label: q, prompt: q }))
+    : activeChartContext
     ? [
         { label: `What does "${activeChartContext.title}" show?`, prompt: activeChartContext.prompt || `Explain the ${activeChartContext.title} chart.` },
         { label: `Key insights`, prompt: `What are the key insights and anomalies from the ${activeChartContext.title} data?` },
@@ -269,7 +287,10 @@ export default function AIChatbot({ contextData, chartFocus, onChartFocusHandled
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 50, scale: 0.9 }}
             transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-            className="fixed bottom-8 right-8 w-full max-w-[420px] h-[620px] max-h-[85vh] bg-white rounded-2xl shadow-2xl flex flex-col z-50 border border-mist overflow-hidden"
+            className={`fixed bottom-8 right-8 bg-white rounded-2xl shadow-2xl flex flex-col z-50 border border-mist overflow-hidden transition-[width,height] duration-200 ${
+              expanded
+                ? 'w-[calc(100vw-4rem)] max-w-[860px] h-[calc(100vh-4rem)]'
+                : 'w-full max-w-[420px] h-[620px] max-h-[85vh]'}`}
           >
             {/* Header */}
             <div className="bg-kle-crimson p-md flex items-center justify-between text-white shadow-md z-10">
@@ -292,6 +313,14 @@ export default function AIChatbot({ contextData, chartFocus, onChartFocusHandled
                   title="Clear conversation context"
                 >
                   <Trash2 size={18} />
+                </button>
+                <button
+                  onClick={toggleExpanded}
+                  className="text-white/80 hover:text-white transition-colors p-xs hover:bg-white/10 rounded-lg"
+                  title={expanded ? 'Make the chat smaller' : 'Make the chat wider'}
+                  aria-label={expanded ? 'Make the chat smaller' : 'Make the chat wider'}
+                >
+                  {expanded ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
                 </button>
                 <button
                   onClick={() => setShowSettings(!showSettings)}
@@ -341,7 +370,7 @@ export default function AIChatbot({ contextData, chartFocus, onChartFocusHandled
             </AnimatePresence>
 
             {/* Messages Area */}
-            <div className="flex-1 overflow-y-auto p-md space-y-lg bg-fog relative">
+            <div className="flex-1 overflow-y-auto overflow-x-hidden p-md space-y-lg bg-fog relative">
               {/* Active Chart Context Banner */}
               <AnimatePresence>
                 {activeChartContext && (
@@ -355,13 +384,13 @@ export default function AIChatbot({ contextData, chartFocus, onChartFocusHandled
                       <BarChart3 size={16} className="text-kle-crimson" />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs font-semibold text-kle-dark truncate">Focused: {activeChartContext.title}</p>
-                      <p className="text-[10px] text-smoke">Queries scoped to this chart only</p>
+                      <p className="text-xs font-semibold text-kle-dark truncate">{activeChartContext.signal ? 'Asking about' : 'Focused'}: {activeChartContext.title}</p>
+                      <p className="text-[10px] text-smoke">{activeChartContext.signal ? 'Starting point only - ask anything' : 'Queries scoped to this chart only'}</p>
                     </div>
                     <button
                       onClick={() => setActiveChartContext(null)}
                       className="flex-shrink-0 p-1 text-smoke hover:text-kle-crimson transition-colors rounded-md hover:bg-kle-crimson/10"
-                      title="Clear chart focus"
+                      title="Clear focus"
                     >
                       <XCircle size={16} />
                     </button>
@@ -372,12 +401,12 @@ export default function AIChatbot({ contextData, chartFocus, onChartFocusHandled
               {messages.map((msg) => (
                 <div
                   key={msg.id}
-                  className={`flex gap-sm max-w-[85%] ${msg.isBot ? '' : 'ml-auto flex-row-reverse'}`}
+                  className={`flex gap-sm min-w-0 ${msg.isBot ? 'max-w-full' : 'max-w-[85%] ml-auto flex-row-reverse'}`}
                 >
                   <div className={`w-8 h-8 mt-1 rounded-full flex-shrink-0 flex items-center justify-center shadow-sm ${msg.isBot ? 'bg-white border border-mist text-kle-crimson' : 'bg-kle-crimson/10 text-kle-crimson'}`}>
                     {msg.isBot ? <Bot size={16} /> : <User size={16} />}
                   </div>
-                  <div className={`p-md rounded-2xl text-sm leading-relaxed ${msg.isBot
+                  <div className={`min-w-0 p-md rounded-2xl text-sm leading-relaxed ${msg.isBot
                     ? 'bg-white border border-mist text-graphite rounded-tl-sm shadow-sm'
                     : 'bg-gradient-to-br from-kle-crimson to-kle-dark text-white rounded-tr-sm shadow-md'}`}
                   >

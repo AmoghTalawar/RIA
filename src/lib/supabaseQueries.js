@@ -583,6 +583,45 @@ export async function fetchStaffData(authUser) {
   };
 }
 
+/* ── "My profile" page (HoD / Deans / VC): the signed-in person's own research record ──
+ * Uses the faculty_publications junction, so the paper count matches the AI assistant
+ * (every paper the person is an author on, not only those where they are the primary staff id). */
+export async function fetchMyProfileData(authUser) {
+  let faculty = null;
+  if (authUser?.riaUserId) {
+    const { data, error } = await supabase.from('v_faculty_full')
+      .select('*').eq('ria_user_id', authUser.riaUserId).limit(1);
+    if (!error && data?.length) faculty = data[0];
+  }
+  if (!faculty) return { faculty: null, pubs: [] };
+
+  const rows = await fetchAll((from, to) =>
+    supabase.from('faculty_publications')
+      .select(
+        'is_corresponding, publications ( pub_id, title, year, article_type, source_publication, ' +
+        'impact_factor, cite_score, q_rank_scopus, q_rank_wos, scs_citations, wos_citations_pub, ' +
+        'gs_citations_pub, doi )'
+      )
+      .eq('faculty_id', faculty.faculty_id)
+      .range(from, to)
+  );
+  const pubs = rows
+    .filter(r => r.publications)
+    .map(r => ({ ...r.publications, is_corresponding: r.is_corresponding }))
+    .sort((a, b) => (b.year || 0) - (a.year || 0));
+
+  return {
+    faculty,
+    pubs,
+    kpis:             buildStaffKPIs(faculty, pubs),
+    publicationsPerYear: buildPublicationsPerYear(pubs),
+    qRankDistribution:   buildQRankDist(pubs),
+    citationTrend:       buildCitationTrend(pubs),
+    topPapers:           buildTopPapers(pubs),
+    table:               buildPublicationsTable(pubs),
+  };
+}
+
 export async function fetchDeptData(authDept) {
   const deptFaculty = await fetchDepartmentFaculty(authDept);
   const riaIds = deptFaculty.map(f => f.ria_user_id).filter(Boolean);
@@ -656,68 +695,6 @@ export async function fetchFacultyDeanData() {
     radarChartData:    {}, // not in DB
     allFaculty,
     instituteSummary,
-  };
-}
-
-export async function fetchExecutiveDeanData() {
-  const [instituteSummary, allFaculty] = await Promise.all([
-    fetchInstituteSummary(),
-    fetchAllFaculty(),
-  ]);
-
-  const totalPubs      = instituteSummary.reduce((s, i) => s + (parseInt(i.total_publications) || 0), 0);
-  const totalCitations = instituteSummary.reduce((s, i) => s + (parseInt(i.total_scopus_citations) || 0), 0);
-  const q1Total        = instituteSummary.reduce((s, i) => s + (parseInt(i.total_q1_scopus) || 0), 0);
-  const q1Percent      = totalPubs > 0 ? Math.round((q1Total / totalPubs) * 100) : 0;
-  const activeCount    = allFaculty.filter(f => f.total_pub_count > 0).length;
-
-  const facultyBoards = instituteSummary.slice(0, 8).map(i => ({
-    name:      i.name,
-    shortName: i.short_name || i.name.split(' ').map(w => w[0]).join('').slice(0, 6),
-    actual:    parseInt(i.total_publications) || 0,
-    target:    Math.round((parseInt(i.total_publications) || 0) * 1.2),
-  })).filter(fb => fb.actual > 0);
-
-  const campusCitationTarget = {
-    actual:       totalCitations,
-    target:       Math.round(totalCitations * 1.2),
-    previousYear: Math.round(totalCitations * 0.82),
-  };
-
-  const execDeanTargets = {
-    publications:      { current: totalPubs,   target: Math.round(totalPubs * 1.2),   period: 'FY 2025-26' },
-    citations:         { current: totalCitations, target: Math.round(totalCitations * 1.2), period: 'FY 2025-26' },
-    q1Percent:         { current: q1Percent,   target: Math.min(q1Percent + 6, 50),   period: 'FY 2025-26' },
-    activeResearchers: { current: activeCount, target: Math.round(allFaculty.length * 0.85), period: 'FY 2025-26' },
-  };
-
-  // Build Q-rank breakdown per institute from faculty aggregates (approx)
-  const facultyBoardQRanks = instituteSummary.slice(0, 8).map(i => {
-    const q1 = parseInt(i.total_q1_scopus) || 0;
-    const total = parseInt(i.total_publications) || 0;
-    const q2 = Math.round(total * 0.22);
-    const q3 = Math.round(total * 0.16);
-    const q4 = Math.round(total * 0.1);
-    return {
-      shortName: i.short_name || i.name.split(' ').map(w => w[0]).join('').slice(0, 6),
-      Q1: q1, Q2: q2, Q3: q3, Q4: q4,
-      avgQRank: q1 > total * 0.4 ? 1.7 : 2.1,
-      avgIF: 2.8,
-    };
-  }).filter(fb => fb.Q1 + fb.Q2 + fb.Q3 + fb.Q4 > 0);
-
-  return {
-    facultyBoards,
-    campusCitationTarget,
-    execDeanTargets,
-    facultyBoardQRanks,
-    qRankDistribution: [
-      { name: 'Q1', value: q1Total },
-      { name: 'Q2', value: Math.round(totalPubs * 0.22) },
-      { name: 'Q3', value: Math.round(totalPubs * 0.16) },
-      { name: 'Q4', value: Math.round(totalPubs * 0.1) },
-    ].filter(q => q.value > 0),
-    campusCategoryDist: [], // not in DB
   };
 }
 

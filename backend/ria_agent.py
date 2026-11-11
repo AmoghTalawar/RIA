@@ -22,11 +22,14 @@ from auth_scope import Scope
 from persona.persona_loader import get_persona, build_system_prompt
 from scope_guard import authorize, filter_tools
 from llm_provider import resolve_provider
+from question_class import is_concept_question
+from source_line import SOURCE_MARK, build_source_line
 
 from ria_tools_groq import (
     TOOLS,
     TOOL_FUNCTIONS,
-    RIA_SYSTEM_PROMPT,
+    CONCEPT_PROMPT,
+    build_ria_prompt,
     _parse_raw_fn_text,
     _override_tool_choice,
 )
@@ -34,6 +37,25 @@ from ria_tools_groq import (
 log = logging.getLogger("ria.agent")
 
 MAX_ITERATIONS = 3
+# Each history message is clipped: a table-style assistant reply can be 1k+ tokens, and it is resent on
+# every model call of every later question.
+HISTORY_MESSAGE_CHARS = 1200
+
+
+def _clip(text: str, limit: int = HISTORY_MESSAGE_CHARS) -> str:
+    text = (text or "").split(SOURCE_MARK, 1)[0]     # the footer is added in code; not worth re-sending
+    return text if len(text) <= limit else text[:limit].rstrip() + " …[earlier reply shortened]"
+
+
+def _system_message(system: str, provider, model: str) -> dict:
+    """The system message. For Anthropic models the whole prefix (tool definitions + system prompt, about
+    90% of every request and identical for a persona) is marked cacheable, so the 2nd and 3rd model call of
+    a question - and later questions from the same persona within the cache lifetime - are billed at the
+    provider's cached-input rate. Other providers cache implicit prefixes on their own."""
+    if provider.name == "openrouter" and str(model).startswith("anthropic/"):
+        return {"role": "system",
+                "content": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]}
+    return {"role": "system", "content": system}
 
 
 async def _call_groq_http(
@@ -132,6 +154,55 @@ def _write_log_entry(dev: dict) -> None:
         log.warning("[ria_agent] could not write log entry: %s", exc)
 
 
+_DATA_YEAR_TTL = 600.0
+_data_year_cache: tuple[float, int | None] = (0.0, None)
+
+
+def _result_status(result: str) -> str:
+    """'success' / 'error' / 'forbidden' / 'no_match' ... from a tool's JSON result."""
+    try:
+        return str(json.loads(result).get("status", "success"))
+    except (ValueError, AttributeError):
+        return "unknown"
+
+
+async def _source_footer(dev: dict, concept_mode: bool, reply: str) -> str:
+    """The 'Source:' line for the answer; empty for refusals and errors, which cite nothing."""
+    if reply.lstrip().startswith(("Sorry,", "I couldn't", "Request timed out", "Rate limit", "That isn't something")):
+        return ""
+    try:
+        year = None if concept_mode else await asyncio.to_thread(_newest_data_year)
+    except Exception:  # noqa: BLE001 - the year is a nicety, never required
+        year = None
+    return build_source_line(dev["tool_calls"], concept=concept_mode, data_year=year)
+
+
+def _newest_data_year() -> int | None:
+    """Newest publication year in the database (cached; the data is a periodic export)."""
+    global _data_year_cache
+    now = time.time()
+    if _data_year_cache[0] > now:
+        return _data_year_cache[1]
+    from sql_tool import execute_sql
+    rows = execute_sql("SELECT MAX(year)::int AS y FROM publications WHERE year IS NOT NULL")
+    year = rows[0]["y"] if isinstance(rows, list) and rows else None
+    _data_year_cache = (now + _DATA_YEAR_TTL, year)
+    return year
+
+
+def _runtime_context(scope: Scope) -> str:
+    """Facts the model can't know on its own: today's date, how current the data is, and whether
+    "my" can be answered (role testing: a HoD called 2024 "this year" and 2025-26 papers
+    "scheduled"; Deans answered "how do I improve my citations" for the whole school)."""
+    today = datetime.now(timezone.utc).date()
+    newest = _newest_data_year()
+    data = (f"newest publication year in the database is {newest}; {newest - 1} is the newest complete year"
+            if newest else "newest publication year unknown")
+    linked = ("yes" if scope.ria_user_id is not None
+              else "no (questions about 'my' own research can't be answered for this account)")
+    return f"TODAY: {today.isoformat()} (current year {today.year}). DATA: {data}.\nLinked faculty profile: {linked}."
+
+
 async def call_ria_agent(
     user_message: str,
     api_key: str,
@@ -163,6 +234,12 @@ async def call_ria_agent(
             log.warning("[ria_agent] Failed to resolve persona for %s/%s: %s", scope.role_level, scope.dean_scope, p_err)
     tools = filter_tools(TOOLS, scope, user_message)
 
+    # A plain concept question ("what is h-index?") needs no data tools: skip the tool definitions and the
+    # routing prompt for it (saves about 5k tokens per call).
+    concept_mode = bool(persona_prompt and not chart_title and is_concept_question(user_message))
+    if concept_mode:
+        tools = []
+
     # 2. Assemble system prompt (Persona framing + Tool rules + Chart/Session context)
     system_sections = []
     if persona:
@@ -174,13 +251,28 @@ async def call_ria_agent(
             f'You are KLE Tech\'s Research AI — scope all answers to the "{chart_title}" chart.'
         )
 
-    system_sections.append(RIA_SYSTEM_PROMPT)
+    # Only the routing rules for the tools this persona actually has.
+    system_sections.append(CONCEPT_PROMPT if concept_mode else build_ria_prompt(t["function"]["name"] for t in tools))
 
-    if context_prompt:
-        system_sections.append(f"=== SESSION CONTEXT ===\n{context_prompt}")
+    if concept_mode:
+        runtime = ""
+    else:
+        try:
+            runtime = await asyncio.to_thread(_runtime_context, scope)
+        except Exception as err:  # noqa: BLE001 - context is helpful, never required
+            log.warning("[ria_agent] runtime context unavailable: %s", err)
+            runtime = f"TODAY: {datetime.now(timezone.utc).date().isoformat()}."
+    session = "\n".join(x for x in (runtime, context_prompt) if x)
+    if session:
+        system_sections.append(f"=== SESSION CONTEXT ===\n{session}")
 
     system = "\n\n".join(system_sections)
-    messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+
+    # Determine the API endpoint and model dynamically based on api_key format
+    provider = resolve_provider(api_key)
+    url, model, api_key = provider.url, provider.model, provider.api_key
+
+    messages: list[dict[str, Any]] = [_system_message(system, provider, model)]
 
     # Include conversation history (last 6 turns, skip current message if duplicated)
     if conversation_history:
@@ -189,16 +281,12 @@ async def call_ria_agent(
                 continue
             if msg["role"] == "user" and msg["content"].strip() == user_message.strip():
                 continue
-            messages.append({"role": msg["role"], "content": msg["content"]})
+            messages.append({"role": msg["role"], "content": _clip(msg["content"])})
 
     messages.append({"role": "user", "content": user_message})
 
     tool_called_this_turn = False
     agent_start = time.monotonic()
-
-    # Determine the API endpoint and model dynamically based on api_key format
-    provider = resolve_provider(api_key)
-    url, model, api_key = provider.url, provider.model, provider.api_key
 
     # Dev info collected across all iterations
     dev: dict[str, Any] = {
@@ -208,7 +296,8 @@ async def call_ria_agent(
         "chart_title": chart_title,
         "iterations": 0,
         "tool_calls": [],
-        "tokens": {"prompt": 0, "completion": 0, "total": 0},
+        "tokens": {"prompt": 0, "completion": 0, "total": 0, "cached": 0},
+        "mode": "concept" if concept_mode else "tools",
         "latency_ms": 0,
         "raw_fn_fallback": False,
         "reply_preview": "",
@@ -221,6 +310,8 @@ async def call_ria_agent(
     )
 
     iteration = 0
+    refused_this_turn = False
+    empty_retried = False
     rate_limit_retries = 0
     max_rate_limit_retries = 5
 
@@ -228,7 +319,9 @@ async def call_ria_agent(
         while iteration < MAX_ITERATIONS:
             dev["iterations"] = iteration + 1
 
-            tool_choice = "auto"
+            # No more tools once a call was refused (retrying other departments/people only burns tokens) or on
+            # the last allowed round (the model must answer, not start another tool call).
+            tool_choice = "none" if (refused_this_turn or iteration == MAX_ITERATIONS - 1) and iteration > 0 else "auto"
             # Answer budget. 768 cut long answers off mid-sentence (and reasoning models such as Gemini
             # spend part of it on thinking). Groq's free tier needs ~768 to stay under 1000 OTPM:
             # set LLM_MAX_TOKENS=768 there.
@@ -257,6 +350,7 @@ async def call_ria_agent(
             dev["tokens"]["prompt"] += usage.get("prompt_tokens", 0)
             dev["tokens"]["completion"] += usage.get("completion_tokens", 0)
             dev["tokens"]["total"] += usage.get("total_tokens", 0)
+            dev["tokens"]["cached"] += (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0
 
             if status == 429:
                 rate_limit_retries += 1
@@ -350,6 +444,15 @@ async def call_ria_agent(
                     finish = c_choice.get("finish_reason")
                 dev["continuations"] = continuations
 
+                if not content and tool_called_this_turn and not empty_retried and iteration < MAX_ITERATIONS:
+                    # An empty reply after tool results (seen live on a long list) would otherwise surface as a
+                    # failure after ~25k tokens. Ask once for a short answer instead.
+                    empty_retried = True
+                    messages.append({"role": "user", "content": (
+                        "Answer now from the tool results above, in under 150 words. If the result was a long "
+                        "list, summarise it, show the first few items and say how many there are in total.")})
+                    continue
+
                 final_reply = content or "I couldn't generate a response. Try rephrasing your question."
                 break
 
@@ -383,7 +486,10 @@ async def call_ria_agent(
                     "tool": fn_name, "args": fn_args,
                     "result_chars": len(result), "exec_ms": tool_ms,
                     "fallback": False, "guard": guard_info.get("guard"),
+                    "status": _result_status(result),
                 })
+                if dev["tool_calls"][-1]["status"] == "forbidden":
+                    refused_this_turn = True
                 log.info(
                     "[ria_agent] tool=%s args=%s result_chars=%d exec_ms=%d",
                     fn_name, fn_args, len(result), tool_ms,
@@ -398,6 +504,7 @@ async def call_ria_agent(
             tool_called_this_turn = True
 
     dev["latency_ms"] = round((time.monotonic() - agent_start) * 1000)
+    final_reply += await _source_footer(dev, concept_mode, final_reply)
     dev["reply_preview"] = final_reply[:120].replace("\n", " ")
 
     # Populate caller's dev dict if provided

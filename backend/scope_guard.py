@@ -21,12 +21,13 @@ Rules (see docs in the plan, section 8.3):
   hod              individual faculty and publications of OWN department; own department
                    with names; other departments aggregates only; comparisons of
                    departments (aggregates) and of faculty inside own department.
-  faculty_dean     aggregates only, inside OWN school (institute); university-wide counts;
-                   no individual faculty, ever. Also: author concentration, cross-department
-                   collaboration, and growth acceleration, all scoped to OWN school.
-  executive_dean   university aggregates; individual faculty only when the message
-                   explicitly asks to "drill down" / go to "faculty level".
-  vice_chancellor  everything (also used for Admin).
+  faculty_dean     everything inside OWN school (institute), including named faculty of the
+                   school's departments; other departments are out of scope; university-wide
+                   counts. Also: author concentration, cross-department collaboration, and
+                   growth acceleration, all scoped to OWN school.
+  executive_dean   whole university, including any individual faculty member.
+  vice_chancellor  everything (also used for Admin). Department/school text is still resolved
+                   to canonical names, so "CSE" means the same department for every role.
 
 Fails closed: unknown persona, missing profile links, an unresolved department, or an
 unavailable directory all deny. Denials come back to the model as
@@ -49,11 +50,15 @@ INDIVIDUAL_TOOLS = frozenset({
     # own-department data for HoD, and (for Executive Dean only) an explicit drill-down.
     "get_faculty_stats", "search_publications_by_author", "get_inactive_faculty",
     "get_top_cited_publications", "get_department_benchmark", "get_citations_by_year",
+    "get_campus_top_authors",      # names ranked by campus: HoD own department, Faculty Dean own school
 })
 AGGREGATE_TOOLS = frozenset({
     "get_department_stats", "count_qrank_publications", "get_yearly_stats", "compare_entities",
-    "get_qrank_distribution", "get_university_overview", "get_department_trend",
+    "get_qrank_distribution", "get_university_overview", "get_department_trend", "get_top_journals",
+    "get_campus_stats",
 })
+# A paper LIST (titles), by campus: Executive Dean and VC only.
+LISTING_TOOLS = frozenset({"list_campus_publications"})
 # Institute/school-level tools: Faculty Dean (own school only) and up. Not HoD or Faculty — their
 # scope is a department, and an institute tool would show them a school beyond their own department.
 INSTITUTE_TOOLS = frozenset({"get_institute_summary"})
@@ -63,27 +68,20 @@ INSTITUTE_TOOLS = frozenset({"get_institute_summary"})
 FACULTY_DEAN_TOOLS = frozenset({
     "get_author_concentration", "get_cross_department_collaboration", "get_growth_acceleration",
 })
-ALL_TOOLS = INDIVIDUAL_TOOLS | AGGREGATE_TOOLS | INSTITUTE_TOOLS | FACULTY_DEAN_TOOLS
+ALL_TOOLS = INDIVIDUAL_TOOLS | AGGREGATE_TOOLS | INSTITUTE_TOOLS | FACULTY_DEAN_TOOLS | LISTING_TOOLS
 
 _TOOLS_BY_PERSONA: dict[str, frozenset[str]] = {
     "faculty": frozenset({
         "get_faculty_stats", "search_publications_by_author", "get_department_stats",
         "count_qrank_publications", "get_yearly_stats", "get_qrank_distribution", "get_university_overview",
         "get_department_trend", "get_top_cited_publications", "get_department_benchmark", "get_citations_by_year",
+        "get_top_journals", "get_campus_stats",
     }),
     "hod": INDIVIDUAL_TOOLS | AGGREGATE_TOOLS,
-    "faculty_dean": AGGREGATE_TOOLS | INSTITUTE_TOOLS | FACULTY_DEAN_TOOLS,   # never INDIVIDUAL_TOOLS: no names, ever
-    "executive_dean": AGGREGATE_TOOLS | INSTITUTE_TOOLS,   # + individual tools on explicit drill-down
+    "faculty_dean": INDIVIDUAL_TOOLS | AGGREGATE_TOOLS | INSTITUTE_TOOLS | FACULTY_DEAN_TOOLS,  # names: own school only
+    "executive_dean": INDIVIDUAL_TOOLS | AGGREGATE_TOOLS | INSTITUTE_TOOLS | LISTING_TOOLS,
     "vice_chancellor": ALL_TOOLS,
 }
-
-_DRILLDOWN_RE = re.compile(r"\bdrill(?:ing)?[\s-]*down\b|\bfaculty[\s-]*level\b", re.IGNORECASE)
-
-
-def wants_drilldown(user_message: str) -> bool:
-    """True when the user explicitly asks to go to individual-faculty level."""
-    return bool(_DRILLDOWN_RE.search(user_message or ""))
-
 
 # ─────────────────────────────────────────────────────────────
 # Decision
@@ -319,7 +317,6 @@ class _Ctx:
     def __init__(self, scope, args: dict, user_message: str, directory: Optional[Directory]):
         self.scope = scope
         self.args = args
-        self.drilldown = wants_drilldown(user_message)
         self._directory = directory
 
     @property
@@ -374,13 +371,14 @@ def _individual(ctx: _Ctx) -> Decision:
         if not dept:
             return _no_dept()
         return _rewrite(ctx, scope_departments=[dept])
-    if p == "executive_dean" and ctx.drilldown:
-        return _rewrite(ctx)
     if p == "faculty_dean":
-        return _deny("Individual faculty data isn't available at the Faculty Dean level. "
-                     "Ask about departments in your school instead.")
-    return _deny("Individual faculty data is kept at department level. To see it, ask explicitly to "
-                 "\"drill down to faculty level\" for a school.")
+        school = ctx.school_departments()
+        if not school:
+            return _no_dept("school")
+        return _rewrite(ctx, scope_departments=school)
+    if p == "executive_dean":
+        return _rewrite(ctx)
+    return _deny("Individual faculty data isn't available for your role.")
 
 
 def _resolve_all(ctx: _Ctx, texts: list[str]) -> tuple[Optional[list[str]], Optional[Decision]]:
@@ -427,6 +425,12 @@ def _institute_summary(ctx: _Ctx) -> Decision:
     return _rewrite(ctx)                                       # executive_dean: unrestricted
 
 
+def _campus_stats(ctx: _Ctx) -> Decision:
+    """get_campus_stats: counts only. The campus's department breakdown (department names with paper
+    counts, no people) is shown to HoD, Executive Dean and VC - the roles that may compare departments."""
+    return _rewrite(ctx, include_departments=ctx.persona in ("hod", "executive_dean", "vice_chancellor"))
+
+
 def _no_scope(ctx: _Ctx) -> Decision:
     """Tools with no department/institute argument: allowed once the persona check passes."""
     return _rewrite(ctx)
@@ -462,20 +466,20 @@ def _department_stats(ctx: _Ctx) -> Decision:
         if not school:
             return _no_dept("school")
         if not text:
-            return _rewrite(ctx, drop=("department",), scope_departments=school, include_names=False)
+            return _rewrite(ctx, drop=("department",), scope_departments=school, include_names=True)
         names, denial = _resolve_all(ctx, [text])
         if denial:
             return denial
         if not set(names) <= set(school):
             return _deny("That department is outside your school. You can view: " + ", ".join(school) + ".")
-        return _rewrite(ctx, drop=("department",), scope_departments=names, include_names=False)
+        return _rewrite(ctx, drop=("department",), scope_departments=names, include_names=True)
     if p == "executive_dean":
         if not text:
             return _deny("Please name a department or school.")
         names, denial = _resolve_all(ctx, [text])
         if denial:
             return denial
-        return _rewrite(ctx, drop=("department",), scope_departments=names, include_names=ctx.drilldown)
+        return _rewrite(ctx, drop=("department",), scope_departments=names, include_names=True)
     return _rewrite(ctx)
 
 
@@ -553,8 +557,8 @@ def _department_trend(ctx: _Ctx) -> Decision:
 
 
 def _inactive_faculty(ctx: _Ctx) -> Decision:
-    """get_inactive_faculty returns NAMES: HoD (own department) or Executive Dean on an explicit
-    "drill down to faculty level" only. Never Faculty or Faculty Dean — they never see names."""
+    """get_inactive_faculty returns NAMES: HoD (own department), Faculty Dean (own school),
+    Executive Dean (any department). Never Faculty."""
     p = ctx.persona
     text = ctx.args.get("department", "")
     if p == "hod":
@@ -566,12 +570,35 @@ def _inactive_faculty(ctx: _Ctx) -> Decision:
             if denial:
                 return denial
             if names != [own]:
-                return _deny(f"As a HoD you can view inactive faculty for your own department ({own}) only.")
+                return _deny(f"As a HoD you can view faculty lists for your own department ({own}) only.")
         return _rewrite(ctx, drop=("department",), scope_departments=[own])
-    if p == "executive_dean" and ctx.drilldown:
-        return _rewrite(ctx)
+    if p == "faculty_dean":
+        school = ctx.school_departments()
+        if not school:
+            return _no_dept("school")
+        if not text:
+            return _rewrite(ctx, drop=("department",), scope_departments=school)
+        names, denial = _resolve_all(ctx, [text])
+        if denial:
+            return denial
+        if not set(names) <= set(school):
+            return _deny("That department is outside your school. You can view: " + ", ".join(school) + ".")
+        return _rewrite(ctx, drop=("department",), scope_departments=names)
+    if p == "executive_dean":
+        if not text:
+            return _rewrite(ctx)
+        names, denial = _resolve_all(ctx, [text])
+        if denial:
+            return denial
+        return _rewrite(ctx, drop=("department",), scope_departments=names)
     return _deny("Individual faculty activity isn't available at your level. Ask about a department's "
                 "publication trend instead.")
+
+
+def _campus_top_authors(ctx: _Ctx) -> Decision:
+    """get_campus_top_authors returns NAMES: HoD (own department only), Faculty Dean (own school), Executive
+    Dean (any department). Never Faculty. (VC never reaches here: _unrestricted resolves department text.)"""
+    return _inactive_faculty(ctx)
 
 
 def _compare(ctx: _Ctx) -> Decision:
@@ -587,8 +614,21 @@ def _compare(ctx: _Ctx) -> Decision:
             if not dept:
                 return _no_dept()
             return _rewrite(ctx, drop=("department",), scope_departments=[dept], include_names=True)
-        if p == "executive_dean" and ctx.drilldown:
-            return _rewrite(ctx, include_names=True)
+        if p == "faculty_dean":
+            school = ctx.school_departments()
+            if not school:
+                return _no_dept("school")
+            text = ctx.args.get("department", "")
+            if text:
+                names, denial = _resolve_all(ctx, [text])
+                if denial:
+                    return denial
+                if not set(names) <= set(school):
+                    return _deny("That department is outside your school. You can view: " + ", ".join(school) + ".")
+                school = names
+            return _rewrite(ctx, drop=("department",), scope_departments=school, include_names=True)
+        if p == "executive_dean":
+            return _vc_or_dean_department_text(ctx, include_names=True)
         return _deny("Comparisons of individual faculty aren't available at your level. Compare departments instead.")
     if etype == "institute":
         # Institute ranking spans schools beyond any one department/school, so it is
@@ -664,6 +704,66 @@ def _cross_department_collaboration(ctx: _Ctx) -> Decision:
     return _rewrite(ctx, drop=("dept_a", "dept_b"), dept_a_scope=names_a[0], dept_b_scope=names_b[0])
 
 
+def _vc_or_dean_department_text(ctx: _Ctx, **trusted) -> Decision:
+    """No department restriction, but any department text the model typed is still resolved to
+    canonical names. Without this, a free-text 'CSE' reaches the tool's own fuzzy ILIKE matching,
+    which also matches the School of CSE's other departments - so the VC got different numbers
+    for "CSE" than every other role."""
+    text = ctx.args.get("department", "")
+    if not text:
+        return _rewrite(ctx, **trusted)
+    names, denial = _resolve_all(ctx, [text])
+    if denial:
+        return denial
+    return _rewrite(ctx, drop=("department",), scope_departments=names, **trusted)
+
+
+def _unrestricted(ctx: _Ctx, fn_name: str) -> Decision:
+    """Vice Chancellor / Admin: no scope limits, only canonical name resolution."""
+    a = ctx.args
+    if fn_name == "compare_entities":
+        etype = str(a.get("entity_type", "department")).strip().lower()
+        entities = a.get("entities") or []
+        if etype == "department" and entities:
+            names, denial = _resolve_all(ctx, entities)
+            if denial:
+                return denial
+            return _rewrite(ctx, drop=("entities", "department"), scope_departments=names)
+        if etype == "faculty":
+            return _vc_or_dean_department_text(ctx)
+        if etype == "institute" and entities:
+            names, denial = _resolve_institutes_all(ctx, entities)
+            if denial:
+                return denial
+            return Decision(True, {**a, "entities": names}, "", "rewrite", f"entities={names}")
+        return _rewrite(ctx)
+    if fn_name == "get_cross_department_collaboration":
+        text_a, text_b = a.get("dept_a", ""), a.get("dept_b", "")
+        if not text_a or not text_b:
+            return _deny("Please name two departments to compare.")
+        names_a, denial = _resolve_all(ctx, [text_a])
+        if denial:
+            return denial
+        names_b, denial = _resolve_all(ctx, [text_b])
+        if denial:
+            return denial
+        if len(names_a) != 1 or len(names_b) != 1:
+            return _deny("Please name one specific department for each side of the comparison.")
+        if names_a == names_b:
+            return _deny("Please choose two different departments to compare.")
+        return _rewrite(ctx, drop=("dept_a", "dept_b"), dept_a_scope=names_a[0], dept_b_scope=names_b[0])
+    if fn_name == "get_institute_summary" and a.get("institute"):
+        names, denial = _resolve_institutes_all(ctx, [a["institute"]])
+        if denial:
+            return denial
+        return _rewrite(ctx, drop=("institute",), scope_institutes=names)
+    if fn_name == "get_campus_stats":
+        return _campus_stats(ctx)
+    if fn_name == "get_department_stats" and not a.get("department"):
+        return _deny("Please name a department or school.")
+    return _vc_or_dean_department_text(ctx)
+
+
 _RULES: dict[str, Callable[[_Ctx], Decision]] = {
     "get_faculty_stats": _individual,
     "search_publications_by_author": _individual,
@@ -671,10 +771,14 @@ _RULES: dict[str, Callable[[_Ctx], Decision]] = {
     "count_qrank_publications": _publication_aggregate,
     "get_yearly_stats": _publication_aggregate,
     "get_qrank_distribution": _publication_aggregate,
+    "get_top_journals": _publication_aggregate,
+    "get_campus_stats": _campus_stats,
+    "list_campus_publications": _no_scope,
     "get_institute_summary": _institute_summary,
     "get_university_overview": _no_scope,
     "get_department_trend": _department_trend,
     "get_inactive_faculty": _inactive_faculty,
+    "get_campus_top_authors": _campus_top_authors,
     "get_top_cited_publications": _individual,
     "get_department_benchmark": _individual,
     "get_citations_by_year": _individual,
@@ -690,10 +794,7 @@ _RULES: dict[str, Callable[[_Ctx], Decision]] = {
 # ─────────────────────────────────────────────────────────────
 
 def allowed_tool_names(scope, user_message: str = "") -> frozenset[str]:
-    base = _TOOLS_BY_PERSONA.get(getattr(scope, "persona_id", None), frozenset())
-    if scope.persona_id == "executive_dean" and wants_drilldown(user_message):
-        return base | INDIVIDUAL_TOOLS
-    return base
+    return _TOOLS_BY_PERSONA.get(getattr(scope, "persona_id", None), frozenset())
 
 
 def filter_tools(tools: list[dict], scope, user_message: str = "") -> list[dict]:
@@ -713,9 +814,9 @@ def authorize(scope, fn_name: str, fn_args: dict, user_message: str = "",
             args = sanitize_args(fn_name, fn_args)
         except BadArgument as err:
             return _finish(scope, fn_name, _deny(str(err)))
-        if persona == "vice_chancellor":                       # VC / Admin: unrestricted, still whitelisted
-            return _finish(scope, fn_name, Decision(True, args, "", "allow", "unrestricted"))
         ctx = _Ctx(scope, args, user_message, directory)
+        if persona == "vice_chancellor":                       # VC / Admin: unrestricted, still whitelisted
+            return _finish(scope, fn_name, _unrestricted(ctx, fn_name))
         return _finish(scope, fn_name, _RULES[fn_name](ctx))
     except GuardUnavailable:
         return _finish(scope, fn_name, _deny("Scope checks are temporarily unavailable. Please try again shortly.",

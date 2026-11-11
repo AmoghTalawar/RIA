@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Building,
@@ -7,6 +7,7 @@ import {
   BarChart3,
   Download,
   FileText,
+  Loader2,
 } from 'lucide-react';
 
 import KPICard from '../components/KPICard';
@@ -15,15 +16,10 @@ import MultiLineChart from '../components/MultiLineChart';
 import DataTable from '../components/DataTable';
 import AIInsightsPanel from '../components/AIInsightsPanel';
 import AIChatbot from '../components/AIChatbot';
-
-import {
-  facultyBoards,
-  campusCitationTarget,
-  qRankDistribution,
-  facultyBoardQRanks,
-  execDeanTargets,
-  campusCategoryDist,
-} from '../data/mockData';
+import SignalsPanel from '../components/SignalsPanel';
+import { detectSignals, askFocusFromSignal } from '../lib/signals';
+import { fetchAllPublications, fetchAllFaculty, fetchInstituteSummary } from '../lib/supabaseQueries';
+import { buildExecutiveDeanData } from '../lib/executiveDeanData';
 
 /* ─── Tab Definitions ─── */
 const TABS = [
@@ -48,8 +44,8 @@ function Treemap({ data, qRanks }) {
         {data.map((fb) => {
           const widthPct = (fb.actual / total) * 100;
           const qr = qRanks.find(q => q.shortName === fb.shortName);
-          const avgQ = qr ? Math.round(qr.avgQRank) : 2;
-          const bgColor = qRankColors[avgQ] || '#3730A3';
+          const avgQ = qr && qr.avgQRank ? Math.round(qr.avgQRank) : null;
+          const bgColor = qRankColors[avgQ] || '#78716C';
 
           return (
             <div
@@ -60,7 +56,7 @@ function Treemap({ data, qRanks }) {
                 gridRow: widthPct > 25 ? 'span 2' : 'span 1',
                 backgroundColor: bgColor,
               }}
-              title={`${fb.name}: ${fb.actual} pubs, Avg Q${avgQ}`}
+              title={`${fb.name}: ${fb.actual} pubs${avgQ ? `, Avg Q${avgQ}` : ''}`}
             >
               <span className="font-heading font-semibold text-sm">{fb.shortName}</span>
               <span className="font-mono text-lg font-bold">{fb.actual}</span>
@@ -99,8 +95,9 @@ function DonutArray({ facultyBoards: fbs, qRanks }) {
                 { name: 'Q3', value: qr.Q3 },
                 { name: 'Q4', value: qr.Q4 },
               ]
-            : [{ name: 'Q1', value: 1 }];
+            : [];
           const total = segs.reduce((s, d) => s + d.value, 0);
+          if (!total) return null;
 
           return (
             <div key={fb.shortName} className="text-center">
@@ -135,20 +132,20 @@ function CategoryBreakdown({ data }) {
   const total = data.reduce((s, d) => s + d.value, 0);
   return (
     <div className="panel">
-      <h3 className="font-heading font-medium text-h2 text-kle-dark mb-md">Researcher Categories</h3>
+      <h3 className="font-heading font-medium text-h2 text-kle-dark mb-md">Researcher Activity</h3>
       <div className="space-y-sm">
         {data.map((cat) => (
           <div key={cat.name} className="flex items-center gap-sm">
             <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: cat.color }} />
-            <span className="text-label text-graphite w-16">{cat.name}</span>
+            <span className="text-label text-graphite w-12">{cat.name}</span>
             <div className="flex-1 h-2 bg-mist rounded-full overflow-hidden">
-              <div className="h-full rounded-full" style={{ width: `${(cat.value / total) * 100}%`, backgroundColor: cat.color }} />
+              <div className="h-full rounded-full" style={{ width: `${total ? (cat.value / total) * 100 : 0}%`, backgroundColor: cat.color }} />
             </div>
-            <span className="font-mono text-sm text-kle-dark w-6 text-right">{cat.value}</span>
+            <span className="font-mono text-sm text-kle-dark w-10 text-right">{cat.value}</span>
           </div>
         ))}
       </div>
-      <p className="text-micro text-smoke mt-sm">{total} total faculty categorised</p>
+      <p className="text-micro text-smoke mt-sm">{total} faculty, grouped by their total publications</p>
     </div>
   );
 }
@@ -158,20 +155,20 @@ function CategoryBreakdown({ data }) {
 /* ═══════════════════════════════════ */
 export default function ExecutiveDeanDashboard() {
   const [activeTab, setActiveTab] = useState('overview');
-  const [selectedYear, setSelectedYear] = useState('2025');
+  /* Live data: everything on this page is computed from the database. */
+  const [rows, setRows] = useState(null);
+  const [loadError, setLoadError] = useState(null);
+  const [chartFocus, setChartFocus] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([fetchAllPublications(), fetchAllFaculty(), fetchInstituteSummary()])
+      .then(([pubs, faculty, institutes]) => { if (!cancelled) setRows({ pubs, faculty, institutes }); })
+      .catch((err) => { if (!cancelled) setLoadError(err.message || String(err)); });
+    return () => { cancelled = true; };
+  }, []);
 
-  const citationTrend = [
-    { year: '2023', ApplEng: 5200, EE: 3800, CompEng: 4500, CommMgmt: 1200, SciTech: 2100 },
-    { year: '2024', ApplEng: 5800, EE: 4200, CompEng: 5100, CommMgmt: 1400, SciTech: 2400 },
-    { year: '2025', ApplEng: 6400, EE: 4700, CompEng: 5800, CommMgmt: 1650, SciTech: 2750 },
-  ];
-
-  const campusInsights = [
-    { type: 'warning', title: 'Comm & Mgmt Needs Support', message: 'Faculty board has lowest publication count (85). 3 departments have <15 publications.', priority: 'high' },
-    { type: 'success', title: 'CompEng Leading Publications', message: 'Computer Engineering leads with 310 publications — on pace to lead all faculty boards.', priority: 'medium' },
-    { type: 'trend',   title: 'Citation Growth +21%', message: 'Campus Scopus citations grew 21% YoY. Active researcher ratio is at 78.5%.', priority: 'medium' },
-    { type: 'info',    title: 'Q1 Ratio Improvement', message: 'Q1 publications up from 30% to 34% of total research output.', priority: 'low' },
-  ];
+  const data = useMemo(() => (rows ? buildExecutiveDeanData(rows) : null), [rows]);
+  const signals = useMemo(() => (rows ? detectSignals({ pubs: rows.pubs, faculty: rows.faculty }) : []), [rows]);
 
   const tabVariants = {
     initial: { opacity: 0, y: 10 },
@@ -179,22 +176,27 @@ export default function ExecutiveDeanDashboard() {
     exit: { opacity: 0, y: -10, transition: { duration: 0.12 } },
   };
 
-  /* Stable table data */
-  const tableData = useMemo(() =>
-    facultyBoards.map((fb, idx) => {
-      const qr = facultyBoardQRanks.find(q => q.shortName === fb.shortName);
-      const q1Val = qr ? qr.Q1 : Math.floor(fb.actual * 0.35);
-      return {
-        id: idx,
-        facultyBoard: fb.name,
-        shortName: fb.shortName,
-        actual: fb.actual,
-        q1Count: q1Val,
-        q1Ratio: ((q1Val / fb.actual) * 100).toFixed(1) + '%',
-        avgIF: qr ? qr.avgIF : 0,
-      };
-    }), []
-  );
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-96 gap-md">
+        <p className="text-kle-crimson font-medium">Failed to load data</p>
+        <p className="text-label text-smoke">{loadError}</p>
+      </div>
+    );
+  }
+  if (!data) {
+    return (
+      <div className="flex flex-col items-center justify-center h-96 gap-md">
+        <Loader2 className="w-10 h-10 text-kle-crimson animate-spin" />
+        <p className="text-label text-smoke">Loading research data…</p>
+      </div>
+    );
+  }
+
+  const {
+    kpis, facultyBoards, facultyBoardQRanks, tableRows, citationTrend, citationSeries, citationColors,
+    avgHIndex, growth, citationCard, researcherActivity, insights, latestYear,
+  } = data;
 
   return (
     <div className="space-y-lg">
@@ -202,19 +204,10 @@ export default function ExecutiveDeanDashboard() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="font-heading font-semibold text-h1 text-kle-dark">BVB Campus Overview</h2>
-            <p className="text-label text-smoke">Strategic Operations View · Cycle {selectedYear}</p>
+            <h2 className="font-heading font-semibold text-h1 text-kle-dark">University Research Overview</h2>
+            <p className="text-label text-smoke">Strategic Operations View{latestYear ? ` · Complete data through ${latestYear}` : ''}</p>
           </div>
           <div className="flex items-center gap-sm">
-            <select
-              value={selectedYear}
-              onChange={(e) => setSelectedYear(e.target.value)}
-              className="px-md py-xs bg-fog border border-mist rounded-md text-body text-sm"
-            >
-              <option value="2025">2025</option>
-              <option value="2024">2024</option>
-              <option value="2023">2023</option>
-            </select>
             <button className="btn btn-primary flex items-center gap-xs text-sm py-xs">
               <Download size={14} />
               Export
@@ -249,14 +242,16 @@ export default function ExecutiveDeanDashboard() {
               <div className="space-y-lg">
                 {/* KPI Cards */}
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-md">
-                  <KPICard label="Publications" value={execDeanTargets.publications.current} delta={14} deltaLabel="YoY" icon={Building} accentColor="gold" />
-                  <KPICard label="Citations" value={execDeanTargets.citations.current} delta={21} deltaLabel="YoY" icon={TrendingUp} accentColor="teal" />
-                  <KPICard label="Q1 Publications" value={execDeanTargets.q1Percent.current} unit="%" delta={4} deltaLabel="YoY" icon={BarChart3} accentColor="indigo" />
-                  <KPICard label="Active Researchers" value={execDeanTargets.activeResearchers.current} delta={6} deltaLabel="YoY" icon={Users} accentColor="teal" />
+                  <KPICard label="Publications" value={kpis.publications.value} delta={kpis.publications.delta} deltaLabel={`in ${latestYear} vs ${latestYear - 1}`} icon={Building} accentColor="gold" />
+                  <KPICard label="Scopus Citations" value={kpis.citations.value} icon={TrendingUp} accentColor="teal" />
+                  <KPICard label="Q1 Publications" value={kpis.q1Percent.value} unit="%" icon={BarChart3} accentColor="indigo" />
+                  <KPICard label="Active Researchers" value={kpis.activeResearchers.value} unit={`of ${kpis.activeResearchers.of}`} icon={Users} accentColor="teal" />
                 </div>
 
+                <SignalsPanel signals={signals} onAsk={(sig) => setChartFocus(askFocusFromSignal(sig))} />
+
                 {/* AI Insights */}
-                <AIInsightsPanel insights={campusInsights} role="executive-dean" />
+                <AIInsightsPanel insights={insights} role="executive-dean" />
 
                 {/* Visualizations Grid */}
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-lg">
@@ -266,7 +261,7 @@ export default function ExecutiveDeanDashboard() {
                       <h3 className="font-heading font-medium text-h2 text-kle-dark mb-md">Faculty Board Publications</h3>
                       <div className="space-y-md">
                         {(() => {
-                          const maxActual = Math.max(...facultyBoards.map(fb => fb.actual));
+                          const maxActual = Math.max(...facultyBoards.map(fb => fb.actual), 1);
                           return facultyBoards.map((fb) => {
                             const barWidth = (fb.actual / maxActual) * 100;
                             return (
@@ -294,32 +289,38 @@ export default function ExecutiveDeanDashboard() {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-lg">
                       <div className="panel flex flex-col justify-between">
                         <div>
-                          <h3 className="font-heading font-medium text-h2 text-kle-dark mb-md">Campus Citations</h3>
+                          <h3 className="font-heading font-medium text-h2 text-kle-dark mb-md">University Citations</h3>
                           <div className="text-center py-md">
                             <span className="font-mono text-5xl font-bold text-kle-dark block">
-                              {campusCitationTarget.actual.toLocaleString('en-IN')}
+                              {citationCard.total.toLocaleString('en-IN')}
                             </span>
                             <span className="text-label text-smoke mt-xs block">Scopus Citations</span>
                           </div>
                         </div>
-                        <div className="border-t border-mist pt-md mt-sm flex items-center justify-between">
-                          <div>
-                            <span className="text-micro text-smoke block">Previous Year</span>
-                            <span className="font-mono text-lg font-semibold text-graphite">
-                              {campusCitationTarget.previousYear.toLocaleString('en-IN')}
-                            </span>
+                        {citationCard.latestYear && citationCard.prevYear && (
+                          <div className="border-t border-mist pt-md mt-sm flex items-center justify-between">
+                            <div>
+                              <span className="text-micro text-smoke block">Papers in {citationCard.prevYear}</span>
+                              <span className="font-mono text-lg font-semibold text-graphite">
+                                {citationCard.prevPubs.toLocaleString('en-IN')}
+                              </span>
+                            </div>
+                            <div className="text-right">
+                              <span className="text-micro text-smoke block">Papers in {citationCard.latestYear}</span>
+                              <span className="font-mono text-lg font-semibold text-graphite flex items-center gap-xs justify-end">
+                                {citationCard.latestPubs.toLocaleString('en-IN')}
+                                {citationCard.pubGrowthPct !== null && (
+                                  <span className={`text-label font-medium ${citationCard.pubGrowthPct >= 0 ? 'text-success' : 'text-danger'}`}>
+                                    {citationCard.pubGrowthPct >= 0 ? '+' : ''}{citationCard.pubGrowthPct}%
+                                  </span>
+                                )}
+                              </span>
+                            </div>
                           </div>
-                          <div className="text-right">
-                            <span className="text-micro text-smoke block">Growth Rate</span>
-                            <span className="text-success font-medium text-lg flex items-center gap-xs justify-end">
-                              <TrendingUp size={16} />
-                              +{((campusCitationTarget.actual - campusCitationTarget.previousYear) / campusCitationTarget.previousYear * 100).toFixed(0)}%
-                            </span>
-                          </div>
-                        </div>
+                        )}
                       </div>
 
-                      <CategoryBreakdown data={campusCategoryDist} />
+                      <CategoryBreakdown data={researcherActivity} />
                     </div>
 
                     {/* Donut Array */}
@@ -338,22 +339,10 @@ export default function ExecutiveDeanDashboard() {
 
                   <MultiLineChart
                     data={citationTrend}
-                    title="Citation Trends by Faculty Board"
+                    title="Citations on Papers Published Each Year, by Faculty Board"
                     xKey="year"
-                    series={[
-                      { key: 'ApplEng', name: 'Applied Eng' },
-                      { key: 'EE', name: 'Electrical' },
-                      { key: 'CompEng', name: 'Computer Eng' },
-                      { key: 'CommMgmt', name: 'Comm & Mgmt' },
-                      { key: 'SciTech', name: 'Sci & Tech' },
-                    ]}
-                    colors={{
-                      ApplEng: '#B91C1C',
-                      EE: '#0F766E',
-                      CompEng: '#3730A3',
-                      CommMgmt: '#B45309',
-                      SciTech: '#44403C',
-                    }}
+                    series={citationSeries}
+                    colors={citationColors}
                     height={240}
                   />
                 </div>
@@ -363,51 +352,45 @@ export default function ExecutiveDeanDashboard() {
                   <div className="panel">
                     <h3 className="font-heading font-medium text-h2 text-kle-dark mb-md">Avg H-Index by Faculty</h3>
                     <div className="space-y-sm">
-                      {[
-                        { name: 'Computer Eng', value: 14.2 },
-                        { name: 'Applied Eng', value: 12.8 },
-                        { name: 'Electrical', value: 11.5 },
-                        { name: 'Sci & Tech', value: 9.8 },
-                        { name: 'Comm & Mgmt', value: 7.2 },
-                      ].map((item) => (
+                      {avgHIndex.map((item) => (
                         <div key={item.name} className="flex items-center gap-sm">
-                          <span className="text-label text-graphite w-24 truncate">{item.name}</span>
+                          <span className="text-label text-graphite w-24 truncate" title={item.name}>{item.name}</span>
                           <div className="flex-1 h-3 bg-mist rounded-full overflow-hidden">
                             <div
                               className="h-full bg-accent-indigo rounded-full"
-                              style={{ width: `${(item.value / 16) * 100}%` }}
+                              style={{ width: `${(item.value / Math.max(...avgHIndex.map((h) => h.value))) * 100}%` }}
                             />
                           </div>
-                          <span className="font-mono text-sm text-kle-dark w-8 text-right">{item.value}</span>
+                          <span className="font-mono text-sm text-kle-dark w-10 text-right">{item.value}</span>
                         </div>
                       ))}
                     </div>
                   </div>
 
                   <div className="panel">
-                    <h3 className="font-heading font-medium text-h2 text-kle-dark mb-md">Publication vs Citation Growth</h3>
+                    <h3 className="font-heading font-medium text-h2 text-kle-dark mb-md">Papers vs Citations on Those Papers</h3>
                     <div className="flex items-end justify-between h-40 gap-md">
-                      {['2023', '2024', '2025'].map((year, idx) => {
-                        const pubs = [680, 785, 845][idx];
-                        const cits = [18200, 22400, 25600][idx];
-                        return (
+                      {(() => {
+                        const maxPubs = Math.max(...growth.map((g) => g.pubs), 1);
+                        const maxCites = Math.max(...growth.map((g) => g.cites), 1);
+                        return growth.map(({ year, pubs, cites }) => (
                           <div key={year} className="flex-1 flex flex-col items-center gap-xs">
                             <div className="w-full flex gap-0.5 h-32">
                               <div
                                 className="flex-1 bg-kle-crimson rounded-t-sm"
-                                style={{ height: `${(pubs / 900) * 100}%`, marginTop: 'auto' }}
-                                title={`Pubs: ${pubs}`}
+                                style={{ height: `${(pubs / maxPubs) * 100}%`, marginTop: 'auto' }}
+                                title={`Papers: ${pubs.toLocaleString('en-IN')}`}
                               />
                               <div
                                 className="flex-1 bg-accent-teal rounded-t-sm"
-                                style={{ height: `${(cits / 30000) * 100}%`, marginTop: 'auto' }}
-                                title={`Citations: ${cits}`}
+                                style={{ height: `${(cites / maxCites) * 100}%`, marginTop: 'auto' }}
+                                title={`Citations on papers from this year: ${cites.toLocaleString('en-IN')}`}
                               />
                             </div>
                             <span className="text-label text-smoke">{year}</span>
                           </div>
-                        );
-                      })}
+                        ));
+                      })()}
                     </div>
                     <div className="flex justify-center gap-md mt-sm">
                       <div className="flex items-center gap-xs">
@@ -419,12 +402,13 @@ export default function ExecutiveDeanDashboard() {
                         <span className="text-micro text-graphite">Citations</span>
                       </div>
                     </div>
+                    <p className="text-micro text-smoke mt-sm text-center">Newer papers have had less time to be cited, so recent years read low.</p>
                   </div>
                 </div>
 
                 {/* Performance Table */}
                 <DataTable
-                  data={tableData}
+                  data={tableRows}
                   columns={[
                     { key: 'facultyBoard', label: 'Faculty Board' },
                     { key: 'actual', label: 'Publications', type: 'number' },
@@ -444,14 +428,14 @@ export default function ExecutiveDeanDashboard() {
 
         {/* Footer */}
         <div className="flex items-center justify-between text-label text-smoke pt-md border-t border-mist">
-          <p>BVB Campus · Dean R&D Office · KLE Technological University</p>
+          <p>Executive Dean R&D Office · KLE Technological University</p>
           <button className="flex items-center gap-xs hover:text-kle-crimson transition-colors">
             <FileText size={13} />
             Export Report
           </button>
         </div>
 
-        <AIChatbot />
+        <AIChatbot chartFocus={chartFocus} onChartFocusHandled={() => setChartFocus(null)} />
       </div>
   );
 }

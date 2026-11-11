@@ -9,6 +9,8 @@ import ExecutiveDeanDashboard from './pages/ExecutiveDeanDashboard';
 import UniversityDeanDashboard from './pages/UniversityDeanDashboard';
 import PublicationExplorer from './pages/PublicationExplorer';
 import ReportsPage from './pages/ReportsPage';
+import MyProfilePage from './pages/MyProfilePage';
+import SettingsPage from './pages/SettingsPage';
 
 // Department sub-pages
 import DeptLayout from './pages/department/DeptLayout';
@@ -98,6 +100,23 @@ function App() {
               element={
                 <ProtectedRoute allowedRoles={['university-dean']}>
                   <PublicationExplorer />
+                </ProtectedRoute>
+              }
+            />
+            {/* Own research profile: every role except Faculty, whose dashboard already is their profile */}
+            <Route
+              path="profile"
+              element={
+                <ProtectedRoute allowedRoles={['hod', 'faculty-dean', 'executive-dean', 'university-dean']}>
+                  <MyProfilePage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="settings"
+              element={
+                <ProtectedRoute allowedRoles={['staff', 'hod', 'faculty-dean', 'executive-dean', 'university-dean']}>
+                  <SettingsPage />
                 </ProtectedRoute>
               }
             />

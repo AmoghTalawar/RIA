@@ -8,7 +8,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { createAuthedFetch, describeChatError, ChatAuthError } from '../src/lib/chatAuthCore.js';
 
-const SUPABASE_URL = process.env.VITE_SUPABASE_URL || 'http://127.0.0.1:54321';
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || 'http://127.0.0.1:55321';
 const ANON = process.env.VITE_SUPABASE_ANON_KEY;
 const API = process.env.E2E_API || 'http://127.0.0.1:5002';
 const PASSWORD = 'KLE@2026';

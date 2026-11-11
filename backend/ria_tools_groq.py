@@ -13,6 +13,7 @@ Usage:
 """
 
 import os
+import re
 import json
 import time
 from typing import Dict, Any
@@ -110,13 +111,213 @@ def _forbidden(message: str) -> str:
 def _faculty_miss(faculty_name: str, scope_departments) -> str:
     if scope_departments is not None:
         return _forbidden(
-            f"No faculty member named '{faculty_name}' was found in your department "
-            f"({', '.join(scope_departments)}). You can view individual faculty in your own department only."
+            f"No faculty member named '{faculty_name}' was found within your access "
+            f"({', '.join(scope_departments)}). You can view individual faculty in these departments only."
         )
     return json.dumps({
         "status": "no_match",
         "message": f"No faculty named '{faculty_name}' exists in the KLE Tech database."
     })
+
+
+# ── One counting rule for department / school totals ────────────────────────
+# Publications, citations, Q1, journal and conference counts are DISTINCT PAPERS that have at
+# least one author from the department (publications.home_author_department, a ';' list) - so a
+# paper co-authored by five CSE faculty is one CSE paper, and the same paper counts once for
+# each different department that worked on it. Faculty count and h-index come from the faculty
+# roster (v_faculty_full). Summing per-faculty columns instead (the old behaviour) counted a
+# co-authored paper once per author: CSE showed 2,023 papers / 56 Q1 in one tool and 1,465 / 59
+# in another, and the VC, who matched "CSE" more loosely, got a third set of numbers.
+COUNTING_NOTE = ("Department/school totals count distinct papers with at least one author from that "
+                 "unit; a paper shared by two departments counts once for each, so department totals "
+                 "add up to more than the university total.")
+
+# The per-person benchmark counts each faculty member's OWN papers (faculty.total_pub_count), so a paper
+# co-authored by three colleagues is in all three counts. That is the right basis for "me vs my department",
+# but it is not comparable with the distinct-paper department totals above (CSE: 15.2 per person vs 11.0
+# distinct papers per faculty). Say which one is being quoted.
+PER_PERSON_NOTE = ("Averages and medians are over each faculty member's own paper count, so a co-authored paper "
+                   "counts for every author. 'Average publications' is therefore per person and is higher than "
+                   "department papers divided by faculty; do not compare it with distinct-paper department totals.")
+
+_PAPER_DEPT_ROWS = """
+    SELECT DISTINCT p.id, trim(d.dep) AS dep, p.scs_citations AS cit, p.q_rank_scopus AS q, p.article_type AS t
+    FROM publications p
+    CROSS JOIN LATERAL unnest(string_to_array(p.home_author_department, ';')) AS d(dep)
+"""
+
+_PAPER_INSTITUTE_ROWS = """
+    SELECT DISTINCT p.id, dd.institute_id AS inst_id, p.scs_citations AS cit, p.q_rank_scopus AS q, p.article_type AS t
+    FROM publications p
+    CROSS JOIN LATERAL unnest(string_to_array(p.home_author_department, ';')) AS d(dep)
+    JOIN departments dd ON dd.name = trim(d.dep)
+"""
+
+_PAPER_AGG = """
+    COUNT(*)::int AS pubs, COALESCE(SUM(cit), 0)::int AS cit,
+    COUNT(*) FILTER (WHERE q = 'Q1')::int AS q1,
+    COUNT(*) FILTER (WHERE t = 'Journal')::int AS j,
+    COUNT(*) FILTER (WHERE t = 'Conference')::int AS c
+"""
+
+# metric name -> output column of _dept_metrics_sql / _institute_metrics_sql
+METRIC_COLUMNS = {
+    "citations": "total_citations", "publications": "total_publications",
+    "hindex": "total_hindex", "h-index": "total_hindex", "h_index": "total_hindex",
+    "avg_hindex": "avg_hindex", "q1_count": "total_q1", "q1": "total_q1",
+    "journals": "total_journals", "conferences": "total_conferences",
+    "publications_per_faculty": "pubs_per_faculty", "pubs_per_faculty": "pubs_per_faculty",
+    "per_faculty": "pubs_per_faculty",
+}
+
+
+def _dept_metrics_sql(names: list = None, order_col: str = "total_publications", limit: int = None) -> str:
+    """One row per department: faculty_count, total_hindex, avg_hindex, total_publications,
+    total_citations, total_q1, total_journals, total_conferences, pubs_per_faculty."""
+    where = ("WHERE " + _faculty_dept_in(names)) if names else "WHERE department IS NOT NULL"
+    return f"""
+        SELECT f.department, f.faculty_count, f.total_hindex, f.avg_hindex,
+               COALESCE(x.pubs, 0)::int AS total_publications, COALESCE(x.cit, 0)::int AS total_citations,
+               COALESCE(x.q1, 0)::int AS total_q1, COALESCE(x.j, 0)::int AS total_journals,
+               COALESCE(x.c, 0)::int AS total_conferences,
+               ROUND(COALESCE(x.pubs, 0)::numeric / NULLIF(f.faculty_count, 0), 2) AS pubs_per_faculty
+        FROM (SELECT department, COUNT(*)::int AS faculty_count,
+                     COALESCE(SUM(scopus_hindex), 0)::int AS total_hindex,
+                     ROUND(AVG(scopus_hindex)::numeric, 2) AS avg_hindex
+              FROM v_faculty_full {where} GROUP BY department) f
+        LEFT JOIN (SELECT dep, {_PAPER_AGG} FROM ({_PAPER_DEPT_ROWS}) r GROUP BY dep) x ON x.dep = f.department
+        ORDER BY {order_col} DESC NULLS LAST, f.department
+        {f"LIMIT {int(limit)}" if limit else ""}
+    """
+
+
+def _dept_metrics_row(r: dict) -> dict:
+    return {
+        "department": r["department"],
+        "faculty_count": r["faculty_count"],
+        "total_publications": r["total_publications"],
+        "total_citations": r["total_citations"],
+        "total_q1": r["total_q1"],
+        "total_journals": r["total_journals"],
+        "total_conferences": r["total_conferences"],
+        "publications_per_faculty": float(r["pubs_per_faculty"]) if r["pubs_per_faculty"] is not None else 0,
+        "total_hindex": r["total_hindex"],
+        "avg_hindex": float(r["avg_hindex"]) if r["avg_hindex"] is not None else 0,
+    }
+
+
+def _institute_metrics_sql(where: str = "", order_col: str = "total_publications", limit: int = None) -> str:
+    """One row per school/institute, same counting rule as _dept_metrics_sql. `where` filters
+    the institutes table (alias i)."""
+    return f"""
+        SELECT i.name AS institute, i.short_name, f.faculty_count, f.total_hindex, f.avg_hindex,
+               COALESCE(x.pubs, 0)::int AS total_publications, COALESCE(x.cit, 0)::int AS total_citations,
+               COALESCE(x.q1, 0)::int AS total_q1, COALESCE(x.j, 0)::int AS total_journals,
+               COALESCE(x.c, 0)::int AS total_conferences,
+               ROUND(COALESCE(x.pubs, 0)::numeric / NULLIF(f.faculty_count, 0), 2) AS pubs_per_faculty
+        FROM institutes i
+        JOIN (SELECT institute_id, COUNT(*)::int AS faculty_count,
+                     COALESCE(SUM(scopus_hindex), 0)::int AS total_hindex,
+                     ROUND(AVG(scopus_hindex)::numeric, 2) AS avg_hindex
+              FROM v_faculty_full GROUP BY institute_id) f ON f.institute_id = i.id
+        LEFT JOIN (SELECT inst_id, {_PAPER_AGG} FROM ({_PAPER_INSTITUTE_ROWS}) r GROUP BY inst_id) x ON x.inst_id = i.id
+        {("WHERE " + where) if where else ""}
+        ORDER BY {order_col} DESC NULLS LAST, i.name
+        {f"LIMIT {int(limit)}" if limit else ""}
+    """
+
+
+def _institute_metrics_row(r: dict) -> dict:
+    row = _dept_metrics_row({**r, "department": None})
+    row.pop("department")
+    return {"institute": r["institute"], "short_name": r["short_name"], **row}
+
+
+def _combined_dept_totals(names: list) -> dict | None:
+    """Totals for a SET of departments as one unit (a paper shared by two of them counts once)."""
+    in_list = ", ".join(_sql_str(n) for n in names)
+    rows = execute_sql(f"""
+        SELECT f.faculty_count, f.total_hindex, f.avg_hindex, x.*
+        FROM (SELECT COUNT(*)::int AS faculty_count, COALESCE(SUM(scopus_hindex), 0)::int AS total_hindex,
+                     ROUND(AVG(scopus_hindex)::numeric, 2) AS avg_hindex
+              FROM v_faculty_full WHERE {_faculty_dept_in(names)}) f
+        CROSS JOIN (SELECT {_PAPER_AGG}
+                    FROM (SELECT DISTINCT id, cit, q, t FROM ({_PAPER_DEPT_ROWS}) r0 WHERE dep IN ({in_list})) r) x
+    """)
+    if isinstance(rows, dict):
+        return rows
+    return rows[0] if rows else None
+
+
+_NAME_TITLES = {"dr", "prof", "professor", "mr", "mrs", "ms", "shri", "smt", "sri"}
+
+
+def _clean_person_name(name: str) -> str:
+    """'Dr. Patil' -> 'Patil'. Titles only hurt trigram matching ('Dr.' pulled unrelated names)."""
+    toks = [t for t in re.findall(r"[A-Za-z0-9]+", name or "") if t.lower() not in _NAME_TITLES]
+    return " ".join(toks)
+
+
+def _ambiguous(faculty_name: str, rows: list, total: int = None) -> str:
+    return json.dumps({
+        "status": "ambiguous",
+        "message": (f"Found {total or len(rows)} faculty members matching '{faculty_name}'. "
+                    "Ask the user which one they mean (list the candidates); do not pick one yourself."),
+        "candidates": [{"name": r["_name"], "department": r["_dept"]} for r in rows],
+    })
+
+
+def _match_faculty(faculty_name: str, scope_departments: list = None, columns: str = "*", department: str = None):
+    """Resolve a typed name to exactly one v_faculty_full row, the same way for every tool.
+
+    Returns (row, None) or (None, error_json). A single-word name (usually a surname, e.g. "Patil")
+    that matches several people as a whole word is ALWAYS ambiguous - the old behaviour silently
+    took the highest trigram score. Multi-word names use trigram similarity; near-ties are ambiguous."""
+    clean = _clean_person_name(faculty_name)
+    if not clean:
+        return None, json.dumps({"status": "error", "message": "faculty_name is required"})
+    scope_sql = (" AND " + _faculty_dept_in(scope_departments)) if scope_departments is not None else ""
+    if department:
+        # A department the model passes to tell two people with the same name apart (e.g. the one shown in a
+        # list it just printed). It only ever narrows: it is ANDed with the caller's scope above.
+        scope_sql += f" AND department ILIKE {_sql_str('%' + _expand_dept(department) + '%')}"
+    lit = _sql_str(clean)
+
+    # Exact full-name match wins outright.
+    rows = execute_sql(f"SELECT author_name AS _name, department AS _dept, {columns} FROM v_faculty_full WHERE lower(author_name) = lower({lit}){scope_sql} LIMIT 2")
+    if isinstance(rows, dict) and "error" in rows:
+        return None, json.dumps({"status": "error", "message": rows["error"]})
+    if isinstance(rows, list) and len(rows) == 1:
+        return rows[0], None
+
+    if " " not in clean and len(clean) >= 3:
+        word = _sql_str(r"\m" + re.escape(clean.lower()) + r"\M")
+        rows = execute_sql(f"""
+            SELECT author_name AS _name, department AS _dept, {columns}, COUNT(*) OVER () AS _total FROM v_faculty_full
+            WHERE author_name ~* {word}{scope_sql}
+            ORDER BY author_name LIMIT 12
+        """)
+        if isinstance(rows, dict) and "error" in rows:
+            return None, json.dumps({"status": "error", "message": rows["error"]})
+        if rows:
+            if len(rows) == 1:
+                return rows[0], None
+            return None, _ambiguous(faculty_name, rows, rows[0].get("_total"))
+
+    rows = execute_sql(f"""
+        SELECT author_name AS _name, department AS _dept, {columns}, similarity(author_name, {lit}) AS _score FROM v_faculty_full
+        WHERE similarity(author_name, {lit}) > 0.4{scope_sql}
+        ORDER BY similarity(author_name, {lit}) DESC LIMIT 5
+    """)
+    if isinstance(rows, dict) and "error" in rows:
+        return None, json.dumps({"status": "error", "message": rows["error"]})
+    if not rows:
+        return None, _faculty_miss(faculty_name, scope_departments)
+    top = float(rows[0]["_score"])
+    close = [r for r in rows if top - float(r["_score"]) <= 0.05]
+    if len(close) > 1 or top < 0.55:
+        return None, _ambiguous(faculty_name, close if len(close) > 1 else rows)
+    return rows[0], None
 
 
 # ═══════════════════════════════════════════════════
@@ -135,79 +336,21 @@ def get_faculty_stats(faculty_name: str = "", source: str = "scopus", *,
     if ria_user_id is None and not faculty_name:
         return json.dumps({"status": "error", "message": "faculty_name is required"})
 
+    cols = ("ria_user_id, faculty_id, author_name, department, institute, short_name, total_pub_count, "
+            "scopus_citation, scopus_hindex, scopus_q1_count, wos_q1_count, journal_count, conference_count, "
+            "wos_pub_count, wos_hindex, avg_citescore, avg_impfactor")
     if ria_user_id is not None:
         # Trusted pin: exact ID, no name matching.
-        match_expr = "1.0"
-        where_sql = f"ria_user_id = {int(ria_user_id)}"
-        order_sql = "ria_user_id"
+        rows = execute_sql(f"SELECT {cols} FROM v_faculty_full WHERE ria_user_id = {int(ria_user_id)} LIMIT 1")
+        if isinstance(rows, dict) and "error" in rows:
+            return json.dumps({"status": "error", "message": rows["error"]})
+        if not rows:
+            return _faculty_miss(faculty_name, scope_departments)
     else:
-        name_escaped = faculty_name.replace("'", "''")
-        match_expr = f"ROUND(similarity(author_name, '{name_escaped}')::numeric, 4)"
-        where_sql = f"similarity(author_name, '{name_escaped}') > 0.2"
-        order_sql = f"similarity(author_name, '{name_escaped}') DESC"
-        if scope_departments is not None:
-            where_sql += " AND " + _faculty_dept_in(scope_departments)
-
-    sql = f"""
-        SELECT
-            ria_user_id,
-            faculty_id,
-            author_name,
-            department,
-            institute,
-            short_name,
-            total_pub_count,
-            scopus_citation,
-            scopus_hindex,
-            scopus_q1_count,
-            wos_q1_count,
-            journal_count,
-            conference_count,
-            wos_pub_count,
-            wos_hindex,
-            avg_citescore,
-            avg_impfactor,
-            {match_expr} AS match_score
-        FROM v_faculty_full
-        WHERE {where_sql}
-        ORDER BY {order_sql}
-        LIMIT 5
-    """
-
-    rows = execute_sql(sql)
-
-    if isinstance(rows, dict) and "error" in rows:
-        return json.dumps({"status": "error", "message": rows["error"]})
-
-    if not rows or len(rows) == 0:
-        return _faculty_miss(faculty_name, scope_departments)
-
-    top_score = float(rows[0].get("match_score", 0))
-
-    # Hard threshold: if the best similarity score is very low, the name simply
-    # doesn't exist in the DB — return no_match immediately.
-    if top_score < 0.4:
-        return _faculty_miss(faculty_name, scope_departments)
-
-    # Show candidates when genuinely ambiguous:
-    #  (a) top score is moderate (< 0.55), OR
-    #  (b) multiple candidates have scores close to the top (within 0.05)
-    if len(rows) > 1:
-        close_matches = [r for r in rows if abs(float(r.get("match_score", 0)) - top_score) <= 0.05]
-        if top_score < 0.55 or len(close_matches) >= 2:
-            return json.dumps({
-                "status": "ambiguous",
-                "message": f"Found {len(close_matches)} faculty members matching '{faculty_name}'. Please specify:",
-                "candidates": [
-                    {
-                        "name": r["author_name"],
-                        "department": r["department"],
-                        "institute": r["short_name"],
-                        "publications": r["total_pub_count"],
-                        "match_score": float(r.get("match_score", 0))
-                    } for r in close_matches
-                ]
-            })
+        row, err = _match_faculty(faculty_name, scope_departments, cols)
+        if err:
+            return err
+        rows = [row]
 
     f = rows[0]
     ria_uid = f["ria_user_id"]
@@ -264,7 +407,7 @@ def get_faculty_stats(faculty_name: str = "", source: str = "scopus", *,
             "avg_impact_factor": round(float(f["avg_impfactor"]), 2) if f["avg_impfactor"] else 0,
         }
 
-    return json.dumps({"status": "success", "data": data}, indent=2)
+    return json.dumps({"status": "success", "data": data}, separators=(",", ":"), ensure_ascii=False)
 
 
 def _qrank_col(source: str = "scopus") -> str:
@@ -330,7 +473,7 @@ def count_qrank_publications(qrank: str = "", department: str = "", year: int = 
         "department": ", ".join(scope_departments) if scope_departments else (dept_full or "All departments (university-wide)"),
         "year": year_int or "All years",
         "count": count,
-    }, indent=2)
+    }, separators=(",", ":"), ensure_ascii=False)
 
 
 def search_publications_by_author(
@@ -357,22 +500,15 @@ def search_publications_by_author(
 
     limit = max(1, min(int(limit), 30))
 
-    if ria_user_id is None and scope_departments is not None:
-        # Resolve the name to a person INSIDE the allowed departments, then pin their ID.
-        name_escaped = author_name.replace("'", "''")
-        who = execute_sql(f"""
-            SELECT ria_user_id
-            FROM v_faculty_full
-            WHERE similarity(author_name, '{name_escaped}') > 0.4
-              AND {_faculty_dept_in(scope_departments)}
-            ORDER BY similarity(author_name, '{name_escaped}') DESC
-            LIMIT 1
-        """)
-        if isinstance(who, dict) and "error" in who:
-            return json.dumps({"status": "error", "message": who["error"]})
-        if not who:
-            return _faculty_miss(author_name, scope_departments)
-        ria_user_id = who[0]["ria_user_id"]
+    if ria_user_id is None:
+        # Resolve the name to ONE person (inside the allowed departments, if scoped), then pin their
+        # ID. A plain home_authors ILIKE would merge every "Patil" into one list.
+        who, err = _match_faculty(author_name, scope_departments, "ria_user_id", department)
+        if who:
+            ria_user_id = who["ria_user_id"]
+        elif scope_departments is not None or json.loads(err).get("status") != "no_match":
+            return err
+        # unscoped and not on the faculty roster: fall back to the author text below
 
     if ria_user_id is not None:
         # home_author_userid is a ';'-joined list of RIA user ids.
@@ -455,7 +591,7 @@ def search_publications_by_author(
                     "qrank_source": "WoS" if _qrank_col(source) == "q_rank_wos" else "Scopus"},
         "count": len(publications),
         "data": publications,
-    }, indent=2)
+    }, separators=(",", ":"), ensure_ascii=False)
 
 
 def get_department_stats(department: str = "", top_n: int = 5, *,
@@ -484,42 +620,40 @@ def get_department_stats(department: str = "", top_n: int = 5, *,
             f"OR institute ILIKE '%{dept_escaped}%'"
         )
 
-    # Aggregate stats
-    agg_sql = f"""
-        SELECT
-            COUNT(*)::int                              AS faculty_count,
-            COALESCE(SUM(total_pub_count), 0)::int    AS total_publications,
-            COALESCE(SUM(scopus_citation), 0)::int    AS total_citations,
-            COALESCE(SUM(scopus_hindex), 0)::int      AS total_hindex,
-            COALESCE(SUM(scopus_q1_count), 0)::int    AS total_q1,
-            COALESCE(SUM(journal_count), 0)::int      AS total_journals,
-            COALESCE(SUM(conference_count), 0)::int   AS total_conferences
-        FROM v_faculty_full
-        WHERE {where_sql}
-    """
-
-    # Top N faculty
-    top_sql = f"""
-        SELECT author_name, scopus_hindex, scopus_citation, total_pub_count, scopus_q1_count
-        FROM v_faculty_full
-        WHERE {where_sql}
-        ORDER BY scopus_citation DESC
-        LIMIT {top_n}
-    """
-
-    agg_rows = execute_sql(agg_sql)
-    top_rows = execute_sql(top_sql) if include_names else []
-
-    if isinstance(agg_rows, dict) and "error" in agg_rows:
-        return json.dumps({"status": "error", "message": agg_rows["error"]})
-
-    if not agg_rows or agg_rows[0]["faculty_count"] == 0:
+    if scope_departments is not None:
+        names = list(scope_departments)
+    else:
+        found = execute_sql(f"SELECT DISTINCT department FROM v_faculty_full WHERE ({where_sql}) AND department IS NOT NULL")
+        if isinstance(found, dict) and "error" in found:
+            return json.dumps({"status": "error", "message": found["error"]})
+        names = [r["department"] for r in found or []]
+        dept_full = ", ".join(names) or dept_full
+    if not names:
         return json.dumps({
             "status": "no_match",
             "message": f"No department found matching '{department}'. Try full name like 'Computer Science and Engineering'."
         })
 
-    agg = agg_rows[0]
+    # Top N faculty
+    top_sql = f"""
+        SELECT author_name, scopus_hindex, scopus_citation, total_pub_count, scopus_q1_count
+        FROM v_faculty_full
+        WHERE {_faculty_dept_in(names)}
+        ORDER BY scopus_citation DESC
+        LIMIT {top_n}
+    """
+
+    agg = _combined_dept_totals(names)
+    top_rows = execute_sql(top_sql) if include_names else []
+
+    if isinstance(agg, dict) and "error" in agg:
+        return json.dumps({"status": "error", "message": agg["error"]})
+    if not agg or agg["faculty_count"] == 0:
+        return json.dumps({
+            "status": "no_match",
+            "message": f"No department found matching '{department}'. Try full name like 'Computer Science and Engineering'."
+        })
+
     top = []
     if include_names and isinstance(top_rows, list):
         top = [
@@ -539,19 +673,21 @@ def get_department_stats(department: str = "", top_n: int = 5, *,
         "department_resolved": dept_full,
         "summary": {
             "faculty_count": agg["faculty_count"],
-            "total_publications": agg["total_publications"],
-            "total_citations": agg["total_citations"],
+            "total_publications": agg["pubs"],
+            "total_citations": agg["cit"],
             "total_hindex": agg["total_hindex"] or 0,
-            "total_q1_publications": agg["total_q1"],
-            "total_journals": agg["total_journals"],
-            "total_conferences": agg["total_conferences"],
+            "avg_hindex": float(agg["avg_hindex"]) if agg["avg_hindex"] is not None else 0,
+            "total_q1_publications": agg["q1"],
+            "total_journals": agg["j"],
+            "total_conferences": agg["c"],
         },
+        "counting": COUNTING_NOTE,
     }
     if include_names:
         result[f"top_{top_n}_by_citations"] = top
     else:
         result["note"] = "Individual faculty names are not available at your access level; these are aggregate figures."
-    return json.dumps(result, indent=2)
+    return json.dumps(result, separators=(",", ":"), ensure_ascii=False)
 
 
 def compare_entities(
@@ -568,8 +704,9 @@ def compare_entities(
     Compare departments, faculty members, or institutes/schools side-by-side, or rank all of them.
     entity_type: 'department', 'faculty', or 'institute'.
     entities: list of names to compare. If empty/None → rank ALL (departments or institutes).
-    metric: sort/compare by this metric (citations, publications, hindex, q1_count).
-    top_n: when ranking all departments, how many to return (max 30).
+    metric: sort/compare by this metric (citations, publications, hindex, q1_count, journals,
+            conferences, publications_per_faculty).
+    top_n: when ranking all departments, how many to return (max 50).
     """
     VALID_METRICS = {
         "citations":    {"col": "scopus_citation",  "label": "Total Scopus Citations"},
@@ -581,6 +718,9 @@ def compare_entities(
         "q1":           {"col": "scopus_q1_count",  "label": "Q1 Publications"},
         "journals":     {"col": "journal_count",    "label": "Journal Publications"},
         "conferences":  {"col": "conference_count",  "label": "Conference Publications"},
+        "publications_per_faculty": {"col": "total_pub_count", "label": "Publications per Faculty"},
+        "pubs_per_faculty":         {"col": "total_pub_count", "label": "Publications per Faculty"},
+        "per_faculty":              {"col": "total_pub_count", "label": "Publications per Faculty"},
     }
 
     metric_key = metric.strip().lower().replace(" ", "_")
@@ -593,66 +733,28 @@ def compare_entities(
 
     col = m["col"]
     label = m["label"]
-    top_n = max(1, min(int(top_n), 30))
+    top_n = max(1, min(int(top_n), 50))
     if scope_departments is not None and not scope_departments:
         return _forbidden("No department is available for your account.")
 
     # ── DEPARTMENT comparison / ranking ──
     if entity_type.strip().lower() == "department":
+        order_col = METRIC_COLUMNS.get(metric_key, "total_citations")
         if scope_departments is not None:
-            sql = f"""
-                SELECT
-                    department,
-                    COUNT(*)::int                            AS faculty_count,
-                    COALESCE(SUM(total_pub_count), 0)::int  AS total_publications,
-                    COALESCE(SUM(scopus_citation), 0)::int  AS total_citations,
-                    COALESCE(SUM(scopus_hindex), 0)::int    AS total_hindex,
-                    COALESCE(SUM(scopus_q1_count), 0)::int  AS total_q1,
-                    COALESCE(SUM(journal_count), 0)::int    AS total_journals,
-                    COALESCE(SUM(conference_count), 0)::int AS total_conferences
-                FROM v_faculty_full
-                WHERE {_faculty_dept_in(scope_departments)}
-                GROUP BY department
-                ORDER BY SUM({col}) DESC
-            """
+            sql = _dept_metrics_sql(scope_departments, order_col)
         elif entities and len(entities) > 0:
-            # Compare specific departments
+            # Compare specific departments (unguarded callers only; the guard resolves names itself)
             expanded = [_expand_dept(d) for d in entities]
-            or_clauses = " OR ".join(
-                f"department ILIKE '%{d.replace(chr(39), chr(39)*2)}%'" for d in expanded
-            )
-            sql = f"""
-                SELECT
-                    department,
-                    COUNT(*)::int                            AS faculty_count,
-                    COALESCE(SUM(total_pub_count), 0)::int  AS total_publications,
-                    COALESCE(SUM(scopus_citation), 0)::int  AS total_citations,
-                    COALESCE(SUM(scopus_hindex), 0)::int    AS total_hindex,
-                    COALESCE(SUM(scopus_q1_count), 0)::int  AS total_q1,
-                    COALESCE(SUM(journal_count), 0)::int    AS total_journals,
-                    COALESCE(SUM(conference_count), 0)::int AS total_conferences
-                FROM v_faculty_full
-                WHERE {or_clauses}
-                GROUP BY department
-                ORDER BY SUM({col}) DESC
-            """
+            or_clauses = " OR ".join(f"department ILIKE {_sql_str('%' + d + '%')}" for d in expanded)
+            found = execute_sql(f"SELECT DISTINCT department FROM v_faculty_full WHERE {or_clauses}")
+            if isinstance(found, dict) and "error" in found:
+                return json.dumps({"status": "error", "message": found["error"]})
+            names = [r["department"] for r in found or [] if r["department"]]
+            if not names:
+                return json.dumps({"status": "no_match", "message": "No departments found."})
+            sql = _dept_metrics_sql(names, order_col)
         else:
-            # Rank ALL departments
-            sql = f"""
-                SELECT
-                    department,
-                    COUNT(*)::int                            AS faculty_count,
-                    COALESCE(SUM(total_pub_count), 0)::int  AS total_publications,
-                    COALESCE(SUM(scopus_citation), 0)::int  AS total_citations,
-                    COALESCE(SUM(scopus_hindex), 0)::int    AS total_hindex,
-                    COALESCE(SUM(scopus_q1_count), 0)::int  AS total_q1,
-                    COALESCE(SUM(journal_count), 0)::int    AS total_journals,
-                    COALESCE(SUM(conference_count), 0)::int AS total_conferences
-                FROM v_faculty_full
-                GROUP BY department
-                ORDER BY SUM({col}) DESC
-                LIMIT {top_n}
-            """
+            sql = _dept_metrics_sql(None, order_col, top_n)
 
         rows = execute_sql(sql)
         if isinstance(rows, dict) and "error" in rows:
@@ -661,27 +763,16 @@ def compare_entities(
         if not rows:
             return json.dumps({"status": "no_match", "message": "No departments found."})
 
-        results = []
-        for i, r in enumerate(rows, 1):
-            results.append({
-                "rank": i,
-                "department": r["department"],
-                "faculty_count": r["faculty_count"],
-                "total_publications": r["total_publications"],
-                "total_citations": r["total_citations"],
-                "total_hindex": r["total_hindex"],
-                "total_q1": r["total_q1"],
-                "total_journals": r["total_journals"],
-                "total_conferences": r["total_conferences"],
-            })
+        results = [{"rank": i, **_dept_metrics_row(r)} for i, r in enumerate(rows, 1)]
 
         return json.dumps({
             "status": "success",
             "comparison_type": "department",
             "sorted_by": label,
             "count": len(results),
+            "counting": COUNTING_NOTE,
             "data": results,
-        }, indent=2)
+        }, separators=(",", ":"), ensure_ascii=False)
 
     # ── FACULTY comparison / ranking ──
     elif entity_type.strip().lower() == "faculty":
@@ -737,7 +828,7 @@ def compare_entities(
                 "sorted_by": label,
                 "count": len(faculty_data),
                 "data": faculty_data,
-            }, indent=2)
+            }, separators=(",", ":"), ensure_ascii=False)
 
         else:
             # Compare specific faculty members
@@ -789,66 +880,31 @@ def compare_entities(
                 "sorted_by": label,
                 "count": len(faculty_data),
                 "data": faculty_data,
-            }, indent=2)
+            }, separators=(",", ":"), ensure_ascii=False)
 
     elif entity_type.strip().lower() == "institute":
-        inst_col_map = {
-            "citations": "total_scopus_citations", "publications": "total_publications",
-            "hindex": "avg_scopus_hindex", "h-index": "avg_scopus_hindex", "h_index": "avg_scopus_hindex",
-            "q1_count": "total_q1_scopus", "q1": "total_q1_scopus",
-            "journals": "total_journals", "conferences": "total_conferences",
-        }
-        inst_col = inst_col_map.get(metric_key, "total_scopus_citations")
-        inst_cols_sql = ("name AS institute, short_name, faculty_count, total_publications, "
-                         "total_scopus_citations, avg_scopus_hindex, total_q1_scopus, "
-                         "total_journals, total_conferences")
-
+        order_col = METRIC_COLUMNS.get(metric_key, "total_citations")
+        if order_col == "total_hindex":
+            order_col = "avg_hindex"                    # schools differ in size; compare averages
+        where = ""
         if entities:
-            or_clauses = " OR ".join(
-                f"(name = {_sql_str(n)} OR short_name = {_sql_str(n)})" for n in entities[:10]
-            )
-            sql = f"""
-                SELECT {inst_cols_sql}
-                FROM v_institute_summary
-                WHERE {or_clauses}
-                ORDER BY {inst_col} DESC
-            """
-        else:
-            sql = f"""
-                SELECT {inst_cols_sql}
-                FROM v_institute_summary
-                ORDER BY {inst_col} DESC
-                LIMIT {top_n}
-            """
-
-        rows = execute_sql(sql)
+            where = " OR ".join(f"(i.name = {_sql_str(n)} OR i.short_name = {_sql_str(n)})" for n in entities[:10])
+        rows = execute_sql(_institute_metrics_sql(where, order_col, None if entities else top_n))
         if isinstance(rows, dict) and "error" in rows:
             return json.dumps({"status": "error", "message": rows["error"]})
         if not rows:
             return json.dumps({"status": "no_match", "message": "No schools/institutes found."})
 
-        results = []
-        for i, r in enumerate(rows, 1):
-            results.append({
-                "rank": i,
-                "institute": r["institute"],
-                "short_name": r["short_name"],
-                "faculty_count": r["faculty_count"],
-                "total_publications": r["total_publications"],
-                "total_citations": r["total_scopus_citations"],
-                "avg_hindex": float(r["avg_scopus_hindex"]) if r["avg_scopus_hindex"] is not None else 0,
-                "total_q1": r["total_q1_scopus"],
-                "total_journals": r["total_journals"],
-                "total_conferences": r["total_conferences"],
-            })
+        results = [{"rank": i, **_institute_metrics_row(r)} for i, r in enumerate(rows, 1)]
 
         return json.dumps({
             "status": "success",
             "comparison_type": "institute",
             "sorted_by": label,
             "count": len(results),
+            "counting": COUNTING_NOTE,
             "data": results,
-        }, indent=2)
+        }, separators=(",", ":"), ensure_ascii=False)
 
     else:
         return json.dumps({
@@ -894,7 +950,7 @@ def get_yearly_stats(year: int = None, department: str = None, *, scope_departme
             "year": year_int,
             "department": dept_label,
             "publication_count": count,
-        }, indent=2)
+        }, separators=(",", ":"), ensure_ascii=False)
 
     else:
         # YoY growth: compare the two most recent COMPLETE years
@@ -935,7 +991,7 @@ def get_yearly_stats(year: int = None, department: str = None, *, scope_departme
             "trend": "up" if growth_pct >= 0 else "down",
             "note": f"Comparing completed years only. {current_year} excluded (partial data).",
             "yearly_breakdown": yearly_breakdown,
-        }, indent=2)
+        }, separators=(",", ":"), ensure_ascii=False)
 
 
 def get_qrank_distribution(department: str = None, year: int = None, source: str = "scopus", *, scope_departments: list = None) -> str:
@@ -995,7 +1051,7 @@ def get_qrank_distribution(department: str = None, year: int = None, source: str
         "q4_count": q4,
         "total_ranked": total,
         "q1_q2_share_percent": round(100.0 * (q1 + q2) / total, 1) if total else 0,
-    }, indent=2)
+    }, separators=(",", ":"), ensure_ascii=False)
 
 
 def get_institute_summary(institute: str = None, *, scope_institutes: list = None) -> str:
@@ -1009,22 +1065,17 @@ def get_institute_summary(institute: str = None, *, scope_institutes: list = Non
         return _forbidden("No school is available for your account.")
 
     if scope_institutes is not None:
-        or_clauses = " OR ".join(f"name = {_sql_str(n)}" for n in scope_institutes)
-        sql = f"SELECT * FROM v_institute_summary WHERE {or_clauses} ORDER BY name"
+        where = " OR ".join(f"i.name = {_sql_str(n)}" for n in scope_institutes)
         label = ", ".join(scope_institutes)
     elif institute:
-        inst_escaped = institute.replace("'", "''")
-        sql = f"""
-            SELECT * FROM v_institute_summary
-            WHERE name ILIKE '%{inst_escaped}%' OR short_name ILIKE '%{inst_escaped}%'
-            ORDER BY name
-        """
+        lit = _sql_str("%" + institute + "%")
+        where = f"i.name ILIKE {lit} OR i.short_name ILIKE {lit}"
         label = institute
     else:
-        sql = "SELECT * FROM v_institute_summary ORDER BY total_publications DESC"
+        where = ""
         label = "All schools"
 
-    rows = execute_sql(sql)
+    rows = execute_sql(_institute_metrics_sql(where, "total_publications"))
     if isinstance(rows, dict) and "error" in rows:
         return json.dumps({"status": "error", "message": rows["error"]})
     if not rows:
@@ -1033,26 +1084,14 @@ def get_institute_summary(institute: str = None, *, scope_institutes: list = Non
             "message": f"No school found matching '{institute}'." if institute else "No schools found.",
         })
 
-    schools = [
-        {
-            "institute": r["name"],
-            "short_name": r["short_name"],
-            "faculty_count": r["faculty_count"],
-            "total_publications": r["total_publications"],
-            "total_citations": r["total_scopus_citations"],
-            "avg_hindex": float(r["avg_scopus_hindex"]) if r["avg_scopus_hindex"] is not None else 0,
-            "total_q1": r["total_q1_scopus"],
-            "total_journals": r["total_journals"],
-            "total_conferences": r["total_conferences"],
-        }
-        for r in rows
-    ]
+    schools = [_institute_metrics_row(r) for r in rows]
     return json.dumps({
         "status": "success",
         "query": label,
         "count": len(schools),
+        "counting": COUNTING_NOTE,
         "data": schools,
-    }, indent=2)
+    }, separators=(",", ":"), ensure_ascii=False)
 
 
 def get_university_overview() -> str:
@@ -1079,15 +1118,7 @@ def get_university_overview() -> str:
                ROUND(AVG(scopus_hindex)::numeric, 2) AS avg_hindex
         FROM v_faculty_full
     """
-    dept_sql = """
-        SELECT department,
-               COALESCE(SUM(total_pub_count), 0)::int AS total_publications,
-               COALESCE(SUM(scopus_citation), 0)::int AS total_citations
-        FROM v_faculty_full
-        GROUP BY department
-        ORDER BY total_publications DESC
-        LIMIT 5
-    """
+    dept_sql = _dept_metrics_sql(None, "total_publications", 5)
 
     totals = execute_sql(totals_sql)
     if isinstance(totals, dict) and "error" in totals:
@@ -1121,7 +1152,8 @@ def get_university_overview() -> str:
         "faculty_count": f["faculty_count"],
         "avg_faculty_hindex": float(f["avg_hindex"]) if f["avg_hindex"] is not None else 0,
         "top_5_departments_by_publications": top_depts,
-    }, indent=2)
+        "counting": COUNTING_NOTE,
+    }, separators=(",", ":"), ensure_ascii=False)
 
 
 def _latest_complete_year() -> int | None:
@@ -1203,20 +1235,21 @@ def get_department_trend(department: str = None, from_year: int = None, to_year:
         "from_year": from_year,
         "to_year": to_year,
         "yearly": yearly,
-    }, indent=2)
+    }, separators=(",", ":"), ensure_ascii=False)
 
 
 def get_inactive_faculty(department: str = None, months: int = 12, *, scope_departments: list = None) -> str:
     """
-    Faculty in one department with no publication on record (via the faculty-publication
-    link) in the last N months, based on the newest COMPLETE year in the dataset — not
-    today's calendar date, since the export has a fixed as-of date. Includes faculty with no
-    publication on record at all.
+    Faculty with no publication on record (via the faculty-publication link) in the last N months, based
+    on the newest COMPLETE year in the dataset - not today's calendar date, since the export has a fixed
+    as-of date. Includes faculty with no publication on record at all.
+
+    ONE department -> the names (compact [name, last_year] pairs). Several departments or the whole
+    university (no department given) -> inactive counts per department only: a university-wide name list
+    is thousands of tokens, so the user is told to pick a department for names.
     """
     if scope_departments is not None and not scope_departments:
         return _forbidden("No department is available for your account.")
-    if scope_departments is None and not department:
-        return json.dumps({"status": "error", "message": "department is required"})
 
     months = max(1, min(int(months), 240))
     years_back = max(1, -(-months // 12))          # ceil(months / 12)
@@ -1229,14 +1262,60 @@ def get_inactive_faculty(department: str = None, months: int = 12, *, scope_depa
     if scope_departments is not None:
         dept_sql = _faculty_dept_in(scope_departments)
         dept_label = ", ".join(scope_departments)
-    else:
+        many = len(scope_departments) > 1
+    elif department:
         dept_full = _expand_dept(department)
         dept_escaped = dept_full.replace("'", "''")
         dept_sql = f"(department ILIKE '%{dept_escaped}%' OR short_name ILIKE '%{dept_escaped}%')"
         dept_label = dept_full
+        many = False
+    else:
+        dept_sql = "department IS NOT NULL"
+        dept_label = "All departments"
+        many = True
 
-    count_sql = f"SELECT COUNT(*)::int AS cnt FROM v_faculty_full WHERE {dept_sql}"
-    count_rows = execute_sql(count_sql)
+    # One row per faculty member with their newest publication year.
+    per_person = f"""
+        SELECT f.author_name, f.department, MAX(p.year) AS last_pub_year
+        FROM v_faculty_full f
+        LEFT JOIN faculty_publications fp ON fp.faculty_id = f.faculty_id
+        LEFT JOIN publications p ON p.id = fp.publication_id
+        WHERE {dept_sql}
+        GROUP BY f.author_name, f.department
+    """
+    caveat = ("'reference_year' is the newest COMPLETE year in the dataset, not today's date. "
+              "A null last year means no publication is on record for that person at all. "
+              "Inactive = no paper in the window cutoff_year..present; anyone with a paper in cutoff_year or later "
+              "(including the current partial year) is active and is not listed.")
+
+    if many:
+        rows = execute_sql(f"""
+            SELECT department, COUNT(*)::int AS faculty,
+                   COUNT(*) FILTER (WHERE last_pub_year IS NULL OR last_pub_year < {cutoff_year})::int AS inactive,
+                   COUNT(*) FILTER (WHERE last_pub_year IS NULL)::int AS never
+            FROM ({per_person}) x GROUP BY department
+            ORDER BY inactive DESC, department
+        """)
+        if isinstance(rows, dict) and "error" in rows:
+            return json.dumps({"status": "error", "message": rows["error"]})
+        if not rows:
+            return json.dumps({"status": "no_match", "message": "No matching faculty."})
+        return json.dumps({
+            "status": "success",
+            "scope": dept_label,
+            "reference_year": reference_year,
+            "cutoff_year": cutoff_year,
+            "months_threshold": months,
+            "inactive_total": sum(r["inactive"] for r in rows),
+            "no_paper_on_record_total": sum(r.get("never", 0) for r in rows),
+            "faculty_total": sum(r["faculty"] for r in rows),
+            "by_department": [[r["department"], r["inactive"], r["faculty"], r.get("never", 0)] for r in rows[:60]],
+            "columns": ["department", "inactive", "faculty", "of_which_no_paper_on_record"],
+            "note": caveat + " These are ALL the departments in scope; name no other. "
+                    "Counts only: ask for one department to see the names.",
+        }, separators=(",", ":"), ensure_ascii=False)
+
+    count_rows = execute_sql(f"SELECT COUNT(*)::int AS cnt FROM v_faculty_full WHERE {dept_sql}")
     if isinstance(count_rows, dict) and "error" in count_rows:
         return json.dumps({"status": "error", "message": count_rows["error"]})
     if not count_rows or count_rows[0]["cnt"] == 0:
@@ -1245,34 +1324,29 @@ def get_inactive_faculty(department: str = None, months: int = 12, *, scope_depa
             "message": f"No department found matching '{department}'." if department else "No matching faculty.",
         })
 
-    sql = f"""
-        SELECT f.author_name, MAX(p.year) AS last_pub_year
-        FROM v_faculty_full f
-        LEFT JOIN faculty_publications fp ON fp.faculty_id = f.faculty_id
-        LEFT JOIN publications p ON p.id = fp.publication_id
-        WHERE {dept_sql}
-        GROUP BY f.author_name
-        HAVING MAX(p.year) IS NULL OR MAX(p.year) <= {cutoff_year}
-        ORDER BY last_pub_year NULLS FIRST, f.author_name
-    """
-    rows = execute_sql(sql)
+    rows = execute_sql(f"""
+        SELECT author_name, last_pub_year FROM ({per_person}) x
+        WHERE last_pub_year IS NULL OR last_pub_year < {cutoff_year}
+        ORDER BY last_pub_year NULLS FIRST, author_name
+    """)
     if isinstance(rows, dict) and "error" in rows:
         return json.dumps({"status": "error", "message": rows["error"]})
 
-    inactive = [{"name": r["author_name"], "last_publication_year": r["last_pub_year"]} for r in (rows or [])]
+    inactive = [[r["author_name"], r["last_pub_year"]] for r in (rows or [])]
     return json.dumps({
         "status": "success",
         "department": dept_label,
         "reference_year": reference_year,
         "cutoff_year": cutoff_year,
         "months_threshold": months,
+        "faculty_total": count_rows[0]["cnt"],
         "inactive_count": len(inactive),
+        "no_paper_on_record": sum(1 for _, last in inactive if last is None),
+        "last_published_before_window": sum(1 for _, last in inactive if last is not None),
+        "columns": ["name", "last_publication_year"],
         "inactive_faculty": inactive,
-        "note": (
-            "'reference_year' is the newest COMPLETE year in the dataset, not today's date. "
-            "A null last_publication_year means no publication is on record for that person at all."
-        ),
-    }, indent=2)
+        "note": caveat,
+    }, separators=(",", ":"), ensure_ascii=False)
 
 
 def _resolve_one_faculty(faculty_name: str, *, ria_user_id: int = None, scope_departments: list = None):
@@ -1286,21 +1360,12 @@ def _resolve_one_faculty(faculty_name: str, *, ria_user_id: int = None, scope_de
     if ria_user_id is None and not faculty_name:
         return None, json.dumps({"status": "error", "message": "faculty_name is required"})
 
-    if ria_user_id is not None:
-        where_sql = f"ria_user_id = {int(ria_user_id)}"
-        order_sql = "ria_user_id"
-    else:
-        name_escaped = faculty_name.replace("'", "''")
-        where_sql = f"similarity(author_name, '{name_escaped}') > 0.4"
-        if scope_departments is not None:
-            where_sql += " AND " + _faculty_dept_in(scope_departments)
-        order_sql = f"similarity(author_name, '{name_escaped}') DESC"
-
+    if ria_user_id is None:
+        return _match_faculty(faculty_name, scope_departments, "ria_user_id, faculty_id, author_name, department")
     rows = execute_sql(f"""
         SELECT ria_user_id, faculty_id, author_name, department
         FROM v_faculty_full
-        WHERE {where_sql}
-        ORDER BY {order_sql}
+        WHERE ria_user_id = {int(ria_user_id)}
         LIMIT 1
     """)
     if isinstance(rows, dict) and "error" in rows:
@@ -1348,7 +1413,7 @@ def get_top_cited_publications(faculty_name: str = "", limit: int = 10, *,
         "sorted_by": "Scopus citations (highest first)",
         "count": len(papers),
         "data": papers,
-    }, indent=2)
+    }, separators=(",", ":"), ensure_ascii=False)
 
 
 def get_department_benchmark(faculty_name: str = "", *, ria_user_id: int = None, scope_departments: list = None) -> str:
@@ -1416,7 +1481,8 @@ def get_department_benchmark(faculty_name: str = "", *, ria_user_id: int = None,
             "citations": _cmp(o.get("scopus_citation"), d.get("avg_citation")),
             "hindex": _cmp(o.get("scopus_hindex"), d.get("avg_hindex")),
         },
-    }, indent=2)
+        "basis": PER_PERSON_NOTE,
+    }, separators=(",", ":"), ensure_ascii=False)
 
 
 def get_citations_by_year(faculty_name: str = "", *, ria_user_id: int = None, scope_departments: list = None) -> str:
@@ -1453,7 +1519,7 @@ def get_citations_by_year(faculty_name: str = "", *, ria_user_id: int = None, sc
             "paper, not how citations accumulated year by year."
         ),
         "yearly": yearly,
-    }, indent=2)
+    }, separators=(",", ":"), ensure_ascii=False)
 
 
 def _resolve_dept_name(text: str) -> str | None:
@@ -1555,7 +1621,7 @@ def get_author_concentration(department: str = None, top_k: int = 5, *, scope_de
         "top_k_publications": top_k_pubs,
         "concentration_percent": round(100.0 * top_k_pubs / total, 1) if total else 0,
         "note": _JUNCTION_COVERAGE_NOTE,
-    }, indent=2)
+    }, separators=(",", ":"), ensure_ascii=False)
 
 
 def get_cross_department_collaboration(dept_a: str = "", dept_b: str = "", *,
@@ -1610,7 +1676,7 @@ def get_cross_department_collaboration(dept_a: str = "", dept_b: str = "", *,
         "joint_share_of_dept_a_percent": round(100.0 * joint / a_total, 1) if a_total else 0,
         "joint_share_of_dept_b_percent": round(100.0 * joint / b_total, 1) if b_total else 0,
         "note": _JUNCTION_COVERAGE_NOTE,
-    }, indent=2)
+    }, separators=(",", ":"), ensure_ascii=False)
 
 
 def get_growth_acceleration(department: str = None, *, scope_departments: list = None) -> str:
@@ -1688,7 +1754,316 @@ def get_growth_acceleration(department: str = None, *, scope_departments: list =
             "means it is slowing down (or output is shrinking faster). The current year is "
             "excluded because its data is usually incomplete."
         ),
-    }, indent=2)
+    }, separators=(",", ":"), ensure_ascii=False)
+
+
+def get_top_journals(department: str = None, qrank: str = "", year: int = None, venue_type: str = "journal",
+                     limit: int = 10, *, scope_departments: list = None) -> str:
+    """
+    Journals (or conferences) ranked by how many KLE Tech papers appeared in them, optionally for one
+    department, one Scopus quartile (Q1-Q4) and one year. Each venue's quartile is the one most of
+    those papers carry (a venue's quartile can change across years). Venue names are grouped
+    case-insensitively.
+    """
+    if scope_departments is not None and not scope_departments:
+        return _forbidden("No department is available for your account.")
+    limit = max(1, min(int(limit), 30))
+    filters = ["source_publication IS NOT NULL", "trim(source_publication) <> ''"]
+    vt = (venue_type or "journal").strip().lower()
+    type_map = {"journal": "Journal", "journals": "Journal", "conference": "Conference", "conferences": "Conference"}
+    if vt in type_map:
+        filters.append(f"article_type = {_sql_str(type_map[vt])}")
+    elif vt not in ("all", "any"):
+        return json.dumps({"status": "error", "message": "venue_type must be 'journal', 'conference' or 'all'."})
+    if qrank:
+        q = qrank.strip().upper()
+        if q not in ("Q1", "Q2", "Q3", "Q4"):
+            return json.dumps({"status": "error", "message": "qrank must be Q1, Q2, Q3 or Q4."})
+        filters.append(f"q_rank_scopus = {_sql_str(q)}")
+    if year is not None:
+        filters.append(f"year = {int(year)}")
+    if scope_departments is not None:
+        filters.append(_pub_dept_any(scope_departments))
+        scope_label = ", ".join(scope_departments)
+    elif department:
+        filters.append(_pub_dept_any([_expand_dept(department)]))
+        scope_label = _expand_dept(department)
+    else:
+        scope_label = "University-wide"
+
+    rows = execute_sql(f"""
+        SELECT MAX(source_publication) AS venue, COUNT(*)::int AS papers,
+               COALESCE(SUM(scs_citations), 0)::int AS citations,
+               MODE() WITHIN GROUP (ORDER BY q_rank_scopus) AS scopus_quartile
+        FROM publications
+        WHERE {" AND ".join(filters)}
+        GROUP BY lower(trim(source_publication))
+        ORDER BY papers DESC, citations DESC
+        LIMIT {limit}
+    """)
+    if isinstance(rows, dict) and "error" in rows:
+        return json.dumps({"status": "error", "message": rows["error"]})
+    if not rows:
+        return json.dumps({"status": "no_data", "message": f"No matching {vt} publications for {scope_label}."})
+    return json.dumps({
+        "status": "success",
+        "scope": scope_label,
+        "venue_type": vt,
+        "qrank_filter": qrank.upper() if qrank else "any",
+        "year": year if year is not None else "All years",
+        "note": "Only venues where KLE Tech authors have published are known; this is not a global journal list.",
+        "data": [
+            {"rank": i, "venue": r["venue"], "papers": r["papers"], "citations": r["citations"],
+             "scopus_quartile": r["scopus_quartile"]}
+            for i, r in enumerate(rows, 1)
+        ],
+    }, separators=(",", ":"), ensure_ascii=False)
+
+
+# ── Campus ──────────────────────────────────────────────────────────────────
+# publications.home_author_location is a ';' list of campuses of the paper's home authors
+# ('Hubballi', 'Belagavi', 'Bengaluru', or e.g. 'Belagavi;Hubballi' for a joint paper).
+_CAMPUS_ALIASES = {
+    "belagavi": "Belagavi", "belgaum": "Belagavi", "belgavi": "Belagavi", "belagam": "Belagavi",
+    "hubballi": "Hubballi", "hubli": "Hubballi", "hubbali": "Hubballi", "dharwad": "Hubballi",
+    "bvb": "Hubballi", "bvb hubli": "Hubballi", "bvb hubballi": "Hubballi", "main campus": "Hubballi",
+    "bengaluru": "Bengaluru", "bangalore": "Bengaluru", "bengalore": "Bengaluru",
+}
+CAMPUSES = ("Hubballi", "Belagavi", "Bengaluru")
+_SCOPUS_INDEXED = "scs_citations IS NOT NULL"
+
+
+def _resolve_campus(text) -> str | None:
+    key = re.sub(r"\s+", " ", re.sub(r"\bcampus\b", " ", str(text or "").lower())).strip()
+    return _CAMPUS_ALIASES.get(key)
+
+
+def _campus_has(campus: str) -> str:
+    """Papers with at least one home author on `campus` (exact element of the ';' list)."""
+    return f"(';' || COALESCE(home_author_location, '') || ';') ILIKE {_sql_str('%;' + campus + ';%')}"
+
+
+def get_campus_stats(campus: str = None, year: int = None, *, include_departments: bool = False) -> str:
+    """
+    Publication counts by campus (Hubballi, Belagavi, Bengaluru), optionally for one year; one campus
+    or all three side by side. A paper is counted for a campus if it has a home author there, so a joint
+    Belagavi-Hubballi paper counts for both. `papers_only_this_campus` excludes joint papers and is the
+    figure the dashboard's campus split shows. With a named campus and include_departments, also the
+    campus's top departments.
+    """
+    if campus:
+        resolved = _resolve_campus(campus)
+        if not resolved:
+            return json.dumps({"status": "no_match",
+                               "message": f"No campus named '{campus}'. Campuses are: {', '.join(CAMPUSES)}."})
+        names = [resolved]
+    else:
+        names = list(CAMPUSES)
+    year_sql = f" AND year = {int(year)}" if year is not None else ""
+
+    total_rows = execute_sql(f"SELECT COUNT(*)::int AS n FROM publications WHERE TRUE{year_sql}")
+    if isinstance(total_rows, dict) and "error" in total_rows:
+        return json.dumps({"status": "error", "message": total_rows["error"]})
+    total = total_rows[0]["n"] if total_rows else 0
+
+    results = []
+    for name in names:
+        has = _campus_has(name)
+        rows = execute_sql(f"""
+            SELECT COUNT(*)::int AS any_author,
+                   COUNT(*) FILTER (WHERE trim(home_author_location) = {_sql_str(name)})::int AS only_this,
+                   COUNT(*) FILTER (WHERE {_SCOPUS_INDEXED})::int AS scopus_indexed,
+                   COUNT(*) FILTER (WHERE q_rank_scopus IS NOT NULL)::int AS scopus_ranked,
+                   COUNT(*) FILTER (WHERE q_rank_scopus = 'Q1')::int AS q1,
+                   COUNT(*) FILTER (WHERE q_rank_scopus = 'Q2')::int AS q2,
+                   COUNT(*) FILTER (WHERE q_rank_scopus = 'Q3')::int AS q3,
+                   COUNT(*) FILTER (WHERE q_rank_scopus = 'Q4')::int AS q4,
+                   COUNT(*) FILTER (WHERE article_type = 'Journal')::int AS journals,
+                   COUNT(*) FILTER (WHERE article_type = 'Conference')::int AS conferences,
+                   COALESCE(SUM(scs_citations), 0)::int AS scopus_citations
+            FROM publications WHERE {has}{year_sql}
+        """)
+        if isinstance(rows, dict) and "error" in rows:
+            return json.dumps({"status": "error", "message": rows["error"]})
+        r = rows[0]
+        entry = {
+            "campus": name,
+            "papers_with_an_author_from_campus": r["any_author"],
+            "papers_only_this_campus": r["only_this"],
+            "papers_shared_with_other_campuses": r["any_author"] - r["only_this"],
+            "share_of_university_papers_percent": round(100.0 * r["only_this"] / total, 1) if total else 0,
+            "scopus_indexed_papers": r["scopus_indexed"],
+            "scopus_ranked_papers": r["scopus_ranked"],
+            "q1": r["q1"], "q2": r["q2"], "q3": r["q3"], "q4": r["q4"],
+            "journals": r["journals"], "conferences": r["conferences"],
+            "scopus_citations": r["scopus_citations"],
+        }
+        # Ready-made ratios, so the model quotes them instead of dividing (and risking the wrong denominator).
+        if r["scopus_ranked"]:
+            entry["q1_share_of_ranked_percent"] = round(100.0 * r["q1"] / r["scopus_ranked"], 1)
+        if r["scopus_indexed"]:
+            entry["citations_per_scopus_paper"] = round(r["scopus_citations"] / r["scopus_indexed"], 1)
+        if include_departments and campus:
+            depts = execute_sql(f"""
+                SELECT trim(d.dep) AS department, COUNT(DISTINCT p.id)::int AS papers
+                FROM publications p
+                CROSS JOIN LATERAL unnest(string_to_array(p.home_author_department, ';')) AS d(dep)
+                WHERE {_campus_has(name).replace('home_author_location', 'p.home_author_location')}
+                  {year_sql.replace('year', 'p.year')}
+                  AND trim(d.dep) NOT IN ('Unknown', 'Not Available', '')
+                GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 15
+            """)
+            if isinstance(depts, list):
+                entry["top_departments_by_papers"] = depts
+        results.append(entry)
+
+    return json.dumps({
+        "status": "success",
+        "year": year if year is not None else "All years",
+        "university_total_papers": total,
+        "data": results,
+        "note": ("A paper is counted for every campus listed on it, so campus totals can add up to more than the "
+                 "university total; 'papers_only_this_campus' does not overlap. 'Scopus indexed' = the paper has "
+                 "Scopus citation data; 'Scopus ranked' = it also has a Scopus quartile (journals). "
+                 "'q1_share_of_ranked_percent' = q1 / scopus_ranked_papers; 'citations_per_scopus_paper' = "
+                 "scopus_citations / scopus_indexed_papers. Quote these; do not calculate other ratios yourself."),
+    }, separators=(",", ":"), ensure_ascii=False)
+
+
+def list_campus_publications(campus: str = "", qrank: str = "", year: int = None, scopus_only: bool = True,
+                             venue_type: str = "", limit: int = 15) -> str:
+    """
+    List papers with at least one home author on a campus (title, year, venue, type, Scopus quartile,
+    citations), newest first. scopus_only keeps Scopus-indexed papers; qrank keeps one quartile.
+    Also returns how many papers matched in total.
+    """
+    resolved = _resolve_campus(campus)
+    if not resolved:
+        return json.dumps({"status": "no_match",
+                           "message": f"No campus named '{campus}'. Campuses are: {', '.join(CAMPUSES)}."})
+    limit = max(1, min(int(limit or 15), 30))      # each row is ~50 tokens: a 50-paper page was ~17k characters
+    filters = [_campus_has(resolved)]
+    if scopus_only:
+        filters.append(_SCOPUS_INDEXED)
+    if qrank:
+        q = qrank.strip().upper()
+        if q not in ("Q1", "Q2", "Q3", "Q4"):
+            return json.dumps({"status": "error", "message": "qrank must be Q1, Q2, Q3 or Q4."})
+        filters.append(f"q_rank_scopus = {_sql_str(q)}")
+    if year is not None:
+        filters.append(f"year = {int(year)}")
+    vt = (venue_type or "").strip().lower()
+    if vt in ("journal", "journals"):
+        filters.append("article_type = 'Journal'")
+    elif vt in ("conference", "conferences"):
+        filters.append("article_type = 'Conference'")
+    where = " AND ".join(filters)
+
+    count = execute_sql(f"SELECT COUNT(*)::int AS n FROM publications WHERE {where}")
+    if isinstance(count, dict) and "error" in count:
+        return json.dumps({"status": "error", "message": count["error"]})
+    total = count[0]["n"] if count else 0
+    rows = execute_sql(f"""
+        SELECT title, year, source_publication, q_rank_scopus, scs_citations
+        FROM publications WHERE {where}
+        ORDER BY year DESC NULLS LAST, scs_citations DESC NULLS LAST
+        LIMIT {limit}
+    """)
+    if isinstance(rows, dict) and "error" in rows:
+        return json.dumps({"status": "error", "message": rows["error"]})
+    if not rows:
+        return json.dumps({"status": "no_data", "campus": resolved, "total_matching": 0,
+                           "message": f"No matching papers for {resolved} campus."})
+    return json.dumps({
+        "status": "success",
+        "campus": resolved,
+        "total_matching": total,
+        "returned": len(rows),
+        "filters": {"scopus_only": bool(scopus_only), "qrank": qrank.upper() if qrank else "any",
+                    "year": year if year is not None else "all", "venue_type": vt or "any"},
+        "note": ("Showing the newest first; say how many of the total_matching are shown and offer to narrow "
+                 "by quartile, year or journal/conference."),
+        "data": [
+            {"title": (r["title"] or "")[:110], "year": r["year"], "venue": (r["source_publication"] or "")[:45],
+             "quartile": r["q_rank_scopus"], "citations": r["scs_citations"]}
+            for r in rows
+        ],
+    }, separators=(",", ":"), ensure_ascii=False)
+
+
+_TOP_AUTHOR_METRICS = {
+    "publications": "papers", "papers": "papers", "scopus": "scopus", "scopus_indexed": "scopus",
+    "q1": "q1", "citations": "cites",
+}
+
+
+def get_campus_top_authors(campus: str = "", department: str = None, year: int = None, metric: str = "publications",
+                           limit: int = 10, *, scope_departments: list = None) -> str:
+    """
+    Faculty ranked by papers published on a campus: "who published the most at Belagavi?". Counts papers
+    whose home authors are all on that campus (a paper listed under two campuses can't be attributed to an
+    author's campus). Optionally one department and/or one year; sort by papers, Scopus-indexed papers,
+    Q1 papers or citations. Returns name, department and counts so a follow-up can ask for a person's papers.
+    """
+    resolved = _resolve_campus(campus)
+    if not resolved:
+        return json.dumps({"status": "no_match",
+                           "message": f"No campus named '{campus}'. Campuses are: {', '.join(CAMPUSES)}."})
+    if scope_departments is not None and not scope_departments:
+        return _forbidden("No department is available for your account.")
+    key = _TOP_AUTHOR_METRICS.get(str(metric or "publications").strip().lower())
+    if key is None:
+        return json.dumps({"status": "error", "message": "metric must be publications, scopus, q1 or citations."})
+    limit = max(1, min(int(limit or 10), 25))
+
+    filters = [f"trim(p.home_author_location) = {_sql_str(resolved)}"]
+    if year is not None:
+        filters.append(f"p.year = {int(year)}")
+    if scope_departments is not None:
+        filters.append("d.name IN (" + ", ".join(_sql_str(n) for n in scope_departments) + ")")
+        scope_label = ", ".join(scope_departments)
+    elif department:
+        filters.append(f"d.name ILIKE {_sql_str('%' + _expand_dept(department) + '%')}")
+        scope_label = _expand_dept(department)
+    else:
+        scope_label = "all departments"
+    base = f"""
+        FROM faculty_publications fp
+        JOIN publications p ON p.id = fp.publication_id
+        JOIN faculty f ON f.id = fp.faculty_id
+        LEFT JOIN departments d ON d.id = f.department_id
+        WHERE {" AND ".join(filters)}
+    """
+    rows = execute_sql(f"""
+        SELECT f.author_name AS name, d.name AS department, COUNT(DISTINCT p.id)::int AS papers,
+               COUNT(DISTINCT p.id) FILTER (WHERE p.scs_citations IS NOT NULL)::int AS scopus,
+               COUNT(DISTINCT p.id) FILTER (WHERE p.q_rank_scopus = 'Q1')::int AS q1,
+               COALESCE(SUM(p.scs_citations), 0)::int AS cites
+        {base}
+        GROUP BY f.id, f.author_name, d.name
+        ORDER BY {key} DESC, papers DESC, f.author_name
+        LIMIT {limit}
+    """)
+    if isinstance(rows, dict) and "error" in rows:
+        return json.dumps({"status": "error", "message": rows["error"]})
+    if not rows:
+        return json.dumps({"status": "no_data", "campus": resolved, "scope": scope_label,
+                           "message": f"No faculty with matching papers on the {resolved} campus."})
+    total = execute_sql(f"SELECT COUNT(DISTINCT f.id)::int AS n {base}")
+    faculty_total = total[0]["n"] if isinstance(total, list) and total else None
+    return json.dumps({
+        "status": "success",
+        "campus": resolved,
+        "scope": scope_label,
+        "year": year if year is not None else "All years",
+        "sorted_by": key,
+        "faculty_with_papers": faculty_total,
+        "columns": ["name", "department", "papers", "scopus_indexed", "q1", "citations"],
+        "data": [[r["name"], r["department"], r["papers"], r["scopus"], r["q1"], r["cites"]] for r in rows],
+        "note": ("Counts papers whose home authors are all on this campus; papers listed under two campuses can't be "
+                 "attributed to an author's campus. To show a person's papers call search_publications_by_author "
+                 "with their name and department."),
+    }, separators=(",", ":"), ensure_ascii=False)
 
 
 TOOLS = [
@@ -1750,11 +2125,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "count_qrank_publications",
-            "description": (
-                "Count publications by Scopus Q-rank, optionally by department/year. Omit qrank "
-                "for a total count, omit department for university-wide. DO NOT use for one "
-                "person's Q-rank — use get_faculty_stats."
-            ),
+            "description": "Count publications by Scopus Q-rank, optionally by department/year. Omit qrank for a total. Not for one person's Q-rank (use get_faculty_stats).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1774,7 +2145,7 @@ TOOLS = [
                     "source": {
                         "type": "string",
                         "enum": ["scopus", "wos"],
-                        "description": "Q-rank index. Default 'scopus' (Excel Q RANK(SCS)); use 'wos' ONLY if the user explicitly asks for Web of Science/WoS."
+                        "description": "'scopus' (default) or 'wos' (only if the user asks for Web of Science)."
                     }
                 },
                 "required": []
@@ -1818,7 +2189,7 @@ TOOLS = [
                     "source": {
                         "type": "string",
                         "enum": ["scopus", "wos"],
-                        "description": "Q-rank index. Default 'scopus' (Excel Q RANK(SCS)); use 'wos' ONLY if the user explicitly asks for Web of Science/WoS."
+                        "description": "'scopus' (default) or 'wos' (only if the user asks for Web of Science)."
                     }
                 },
                 "required": ["author_name"]
@@ -1829,11 +2200,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "compare_entities",
-            "description": (
-                "Compare or rank departments, faculty, or institutes/schools. "
-                "entity_type='department'|'faculty'|'institute'. Leave entities empty to rank ALL "
-                "of that type; for faculty ranking, optionally set department to filter."
-            ),
+            "description": "Compare or rank departments, faculty or institutes/schools. Leave entities empty to rank ALL of that type; for faculty, optionally filter by department.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1915,7 +2282,7 @@ TOOLS = [
                     "source": {
                         "type": "string",
                         "enum": ["scopus", "wos"],
-                        "description": "Q-rank index. Default 'scopus' (Excel Q RANK(SCS)); use 'wos' ONLY if the user explicitly asks for Web of Science/WoS."
+                        "description": "'scopus' (default) or 'wos' (only if the user asks for Web of Science)."
                     }
                 },
                 "required": []
@@ -1962,11 +2329,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_department_trend",
-            "description": (
-                "Multi-year trend for ONE department: total/Q1/Q2 counts per year. Single "
-                "department only — use get_yearly_stats for the whole university. Omit years for "
-                "the last 5 completed years; omit department for your own."
-            ),
+            "description": "Multi-year trend for ONE department: total/Q1/Q2 counts per year. Omit years for the last 5 completed years; omit department for your own.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2086,11 +2449,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_author_concentration",
-            "description": (
-                "Share of a department's/school's publications from its top-K most-published "
-                "authors (via the faculty-publication link, not text matching). Never returns "
-                "names. Faculty Dean only; omit department for your whole school."
-            ),
+            "description": "How concentrated a department's output is in a few authors (share by the top-k authors), per department in your school. Faculty Dean only.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2139,11 +2498,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_growth_acceleration",
-            "description": (
-                "Year-over-year growth AND whether that growth is speeding up/slowing down "
-                "(acceleration), per department in your school, for the last few completed years. "
-                "NOT a plain trend — use get_department_trend for that. Faculty Dean only."
-            ),
+            "description": "Year-over-year growth AND whether it is speeding up or slowing down, per department in your school. Not a plain trend (use get_department_trend). Faculty Dean only.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2153,6 +2508,79 @@ TOOLS = [
                     }
                 },
                 "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_top_journals",
+            "description": "Journals (or conferences) ranked by number of KLE Tech papers in them, with each venue's Scopus quartile. Optional department, quartile, year.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "department": {"type": ["string", "null"], "description": "Dept name/abbreviation; omit for university-wide."},
+                    "qrank": {"type": ["string", "null"], "description": "Only venues with this Scopus quartile: Q1, Q2, Q3 or Q4."},
+                    "year": {"type": ["integer", "null"], "description": "Only papers from this year."},
+                    "venue_type": {"type": ["string", "null"], "description": "'journal' (default), 'conference' or 'all'."},
+                    "limit": {"type": ["integer", "null"], "description": "How many venues (default 10, max 30)."}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_campus_stats",
+            "description": "Papers by campus (Hubballi, Belagavi/Belgaum, Bengaluru): totals, Scopus-indexed, Q1-Q4, journals/conferences, citations. One campus or all three; optional year.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "campus": {"type": ["string", "null"], "description": "Campus name; omit to compare all three."},
+                    "year": {"type": ["integer", "null"], "description": "Only papers from this year."}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_campus_publications",
+            "description": "List papers from a campus (title, year, venue, quartile, citations) plus the total match count. Scopus-indexed only by default.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "campus": {"type": "string", "description": "Campus name: Hubballi, Belagavi (Belgaum) or Bengaluru."},
+                    "qrank": {"type": ["string", "null"], "description": "Only this Scopus quartile: Q1, Q2, Q3 or Q4."},
+                    "year": {"type": ["integer", "null"], "description": "Only papers from this year."},
+                    "scopus_only": {"type": ["boolean", "null"], "description": "Scopus-indexed only (default true); false for all papers."},
+                    "venue_type": {"type": ["string", "null"], "description": "'journal' or 'conference'; omit for both."},
+                    "limit": {"type": ["integer", "null"], "description": "How many papers to list (default 15, max 30)."}
+                },
+                "required": ["campus"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_campus_top_authors",
+            "description": (
+                "Faculty ranked by papers published on a campus ('who published the most at Belgaum?'), with "
+                "department and counts. Optional department, year, and sort (publications, scopus, q1, citations)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "campus": {"type": "string", "description": "Hubballi, Belagavi (Belgaum) or Bengaluru."},
+                    "department": {"type": ["string", "null"], "description": "Only this department."},
+                    "year": {"type": ["integer", "null"], "description": "Only papers from this year."},
+                    "metric": {"type": ["string", "null"], "description": "publications (default), scopus, q1 or citations."},
+                    "limit": {"type": ["integer", "null"], "description": "How many people (default 10, max 25)."}
+                },
+                "required": ["campus"]
             }
         }
     }
@@ -2176,86 +2604,183 @@ TOOL_FUNCTIONS = {
     "get_author_concentration":         get_author_concentration,
     "get_cross_department_collaboration": get_cross_department_collaboration,
     "get_growth_acceleration":          get_growth_acceleration,
+    "get_top_journals":                 get_top_journals,
+    "get_campus_stats":                 get_campus_stats,
+    "list_campus_publications":         list_campus_publications,
+    "get_campus_top_authors":           get_campus_top_authors,
 }
 
-RIA_SYSTEM_PROMPT = """You are RIA (Research Intelligence Agent) for KLE Technological University.
-You MUST ALWAYS call a tool. NEVER answer research data from memory or make up numbers.
+_PROMPT_HEAD = """You are RIA (Research Intelligence Agent) for KLE Technological University.
+You MUST ALWAYS call a tool for KLE Tech data. NEVER answer research data from memory or make up numbers.
 
 PRECEDENCE: If a ROLE PERSONA section appears above, it defines your voice, tone, response structure
 and who you are talking to. This prompt defines tool routing, data honesty and access limits. If they
 conflict on style or format, follow the persona. If they conflict on which tools you may call or what
 data you may state, follow this prompt.
 
-IMPORTANT: the routing table below names every tool that exists, but your tools this turn may be a
-subset (role-based access). If the best-matching tool isn't in your tools this turn, do NOT call it
-anyway — say in plain words it's not available at your access level and suggest an alternative.
+Only the tools listed below are yours this turn. If the right tool isn't listed, say "That isn't available
+at your access level." and suggest something they CAN ask. If the data isn't held at all, say "That isn't
+in the RIA database." Never tell the user a tool, function or parameter name.
 
-TOOL ROUTING (first matching rule wins; only applies to tools you actually have this turn):
-- Compound overview, no specific dept/person ("research overview", "summarize our output") → get_university_overview
-- Full Q1-Q4 breakdown / Q1+Q2 share in one call → get_qrank_distribution (not 4x count_qrank_publications)
-- ONE school's stats ("how is School of CSE doing") → get_institute_summary
-- School/institute ranking or comparison → compare_entities(entity_type='institute')
-- Faculty inactive in a dept ("not published in N months/year") → get_inactive_faculty
-- Output concentrated in a few authors ("author concentration", "how spread out") → get_author_concentration
-- Collaboration between TWO named departments → get_cross_department_collaboration
-- Growth SPEEDING UP or SLOWING DOWN ("accelerating/decelerating") → get_growth_acceleration (not get_department_trend)
-- Multi-year trend/growth for ONE named department → get_department_trend
-- Year count / YoY growth for the WHOLE UNIVERSITY ("in 2024", "YoY", "growth rate", "trending") → get_yearly_stats
-- Compare/rank departments or faculty ("compare", "vs", "rank", "top", "leaderboard") → compare_entities
-- ONE person's most-cited paper / papers sorted by citations → get_top_cited_publications
-- ONE person vs their department average/median → get_department_benchmark
-- ONE person's pubs/citations by year (NOT "trend"/"trajectory") → get_citations_by_year
-- Per-person stats/h-index/citations/Q-rank/profile → get_faculty_stats
-- Per-person paper listing/titles → search_publications_by_author
-- ONE department's overview/stats/top faculty → get_department_stats
-- Q-rank count for dept or university, optionally by year → count_qrank_publications
-- Total publication count (no qrank, no year) → count_qrank_publications (no args)
+TOOL ROUTING (first matching rule wins):
+"""
 
+# (tool the rule routes to, rule text). A persona only receives the rules for tools it was given.
+_ROUTING = [
+    ("get_university_overview",
+     '- Compound overview, no specific dept/person ("research overview", "summarize our output") → get_university_overview'),
+    ("get_qrank_distribution",
+     "- Full Q1-Q4 breakdown / Q1+Q2 share in one call → get_qrank_distribution (not 4x count_qrank_publications)"),
+    ("get_institute_summary",
+     '- ONE school\'s stats ("how is School of CSE doing") → get_institute_summary'),
+    ("compare_entities",
+     "- School/institute ranking or comparison → compare_entities(entity_type='institute')\n"
+     "- Which department has the most/least X, rank/group departments by X, \"per department\", \"grouped by\n"
+     "  department\" → compare_entities(entity_type='department', metric=X); metric='q1_count' for Q1 papers,\n"
+     "  'publications_per_faculty' for per-faculty productivity; for \"all departments\"/\"grouped by\" set top_n=50"),
+    ("get_top_journals",
+     '- Journals/venues ("top journals in ECE", "which Q1 journals", "most used conferences") → get_top_journals'),
+    ("get_campus_stats",
+     "- Campus (Hubballi/BVB, Belagavi/Belgaum, Bengaluru) counts/compare/\"by campus\" → get_campus_stats. Campus IS in\n"
+     "  the database — never say it isn't. State the figure as \"papers_only_this_campus\"; mention shared papers if\n"
+     "  asked for totals."),
+    ("list_campus_publications",
+     "- \"List papers from <campus>\" → list_campus_publications; say how many of total_matching are shown"),
+    ("get_campus_top_authors",
+     "- Who published the most at/in a campus, top authors of a campus → get_campus_top_authors"),
+    ("get_inactive_faculty",
+     '- Faculty inactive ("not published in N months/year") → get_inactive_faculty; no department = counts per department'),
+    ("get_author_concentration",
+     '- Output concentrated in a few authors ("author concentration", "how spread out") → get_author_concentration'),
+    ("get_cross_department_collaboration",
+     "- Collaboration between TWO named departments → get_cross_department_collaboration"),
+    ("get_growth_acceleration",
+     '- Growth SPEEDING UP or SLOWING DOWN ("accelerating/decelerating") → get_growth_acceleration (not get_department_trend)'),
+    ("get_department_trend",
+     "- Multi-year trend/growth for ONE named department → get_department_trend"),
+    ("get_yearly_stats",
+     '- Year count / YoY growth for the WHOLE UNIVERSITY ("in 2024", "YoY", "growth rate", "trending") → get_yearly_stats'),
+    ("get_top_cited_publications",
+     "- ONE person's most-cited paper / papers sorted by citations → get_top_cited_publications"),
+    ("get_department_benchmark",
+     "- ONE person vs their department average/median → get_department_benchmark"),
+    ("get_citations_by_year",
+     "- ONE person's publications per year / publication trend over N years → get_citations_by_year; report\n"
+     "  its 'publications' count per year (citations per year only if asked)"),
+    ("get_faculty_stats",
+     "- Per-person stats/h-index/citations/Q-rank/profile → get_faculty_stats"),
+    ("search_publications_by_author",
+     "- Per-person paper listing/titles → search_publications_by_author"),
+    ("get_department_stats",
+     "- ONE department's overview/stats/top faculty → get_department_stats"),
+    ("count_qrank_publications",
+     "- Q-rank count for dept or university, optionally by year; total publication count (no args) → count_qrank_publications"),
+]
+
+_PROMPT_RULES = """
 RULES:
-- source='scopus' by default; 'wos' only if the user says Web of Science/WoS.
-- Any question about quartiles / Q1-Q4 / Q-rank is answered from the Scopus quartile (Excel 'Q RANK(SCS)')
-  unless the user explicitly asks for WoS / Web of Science — then pass source='wos'. Never mix the two,
-  and say which index the number is from ("Scopus Q1" / "WoS Q1").
-- status='ambiguous': show numbered candidates, ask the user to pick.
+- source='scopus' by default; 'wos' only if the user says Web of Science/WoS. Quartile (Q1-Q4) questions use
+  the Scopus quartile unless WoS is asked; never mix the two, and say which index the number is from.
+- status='ambiguous': list the candidates (name — department) and ask which one they mean. Never pick
+  one yourself and never answer for a guessed person. Same for every role.
 - status='no_match': reply with EXACTLY one sentence and nothing else —
   faculty: "There is no faculty named '[name]' in the KLE Tech database."
   department/institute: "There is no department/institute named '[name]' in the KLE Tech database."
-  No table, no 'Not Found' values, no guessed stats.
 - status='error': reply "Sorry, I couldn't retrieve that data. Please try again."
 - status='forbidden': tell the user plainly, using the tool's message; suggest what they CAN ask;
   never call another tool to work around it or guess the data.
-- If a result has a 'note' caveat, state it in your own words BEFORE the data, every time — even if
-  the user's own wording (e.g. "trend"/"trajectory") contradicts it. get_citations_by_year's counts
-  are current totals, not a history — never call them "accumulating", "rising", or "growing".
+- If a result has a 'note' caveat, state it in your own words, in ONE short line, right after your first (lead) sentence
+  and before any table, every time.
 - NEVER fabricate names/numbers. Only use tool-result data; omit missing/null fields rather than
   showing 'Not Found' or '0'.
 - Tool results are already in the conversation — use them, do not call the tool again.
 - CANNOT answer: NIRF scores, funding, PhD data → politely decline.
+- No data holds citations OVER TIME (only a current total per paper). For "which campus/department improved or grew
+  in citations" say so in one sentence and offer growth in publications per year or citations by publication year
+  instead; do not call tools to approximate a citation trend.
+- Dates: use the TODAY / DATA line in SESSION CONTEXT. "This year" means the current calendar year;
+  if it is later than the newest complete data year, say its figures are partial. Never describe
+  publications in the database as "scheduled" or "upcoming".
+- "My"/"I" questions: answer about the user's own faculty profile. If SESSION CONTEXT says the account
+  has no linked faculty profile, say so in one line and answer for their scope (school/university).
+- Follow-ups ("there", "their", "them", "that campus/department") refer to the campus, department or people in
+  your previous reply: reuse them, pass the department to tell two people with one name apart, don't ask again.
+- Results with a 'counting' field: never add department totals together to get a school or university
+  total — they overlap. Use the tool's own total.
+"""
 
-RESPONSE FORMAT — answer ONLY what was asked, no extra metrics volunteered.
-- Single metric (h-index, publications, citations, a Q1-Q4 count, impact factor, cite score, a
-  year's count): one short sentence naming the person/scope and that one number, e.g. "[Name]'s
-  Scopus h-index is X." / "KLE Tech had X publications in 2024."
-- Full profile ("stats", "profile", "overview", "full stats"): start with the person's name and
-  department (and institute if given), then all metrics, bulleted.
-- Q-rank breakdown ("q rank", "quartile breakdown"): all four Q1-Q4 values.
+# Only sent when the persona has the tool the sentence is about.
+_CONDITIONAL_RULES = {
+    "get_inactive_faculty":
+        "- get_inactive_faculty: name only departments that appear in the result (the tool lists every department "
+        "in scope; never mention or suggest one that is absent). 'no paper on record' people may be missing "
+        "faculty-to-paper links, not inactive: give that split before any conclusion and do not call the gap "
+        "\"department-wide engagement\" on the totals alone.\n",
+    "get_citations_by_year":
+        "- get_citations_by_year's counts are current totals, not a history — never call them \"accumulating\", "
+        "\"rising\", or \"growing\".\n",
+}
+
+# Sent only to personas WITHOUT the tool: they must not try to build a ranking out of single-department calls
+# (a Faculty "rank departments" question looped on get_department_stats, 5 calls and 23k tokens).
+_ABSENT_RULES = {
+    "compare_entities":
+        "- You cannot rank or compare departments, schools or campuses. If asked, say so in one sentence and offer "
+        "the user's own department figures; never loop over departments one at a time.\n",
+}
+
+_PROMPT_FORMAT = """
+RESPONSE FORMAT — answer ONLY what was asked, no extra metrics volunteered; under ~200 words unless a
+table or list was asked for.
+- Single metric (h-index, publications, citations, a Q1-Q4 count, a year's count): one short sentence
+  naming the person/scope and that one number.
+- Full profile ("stats", "profile", "overview"): the person's name and department, then all metrics, bulleted.
+- Q-rank breakdown: all four Q1-Q4 values.
 - Department stats: summary + top-faculty list; label 'total_hindex' as 'Total H-Index (sum)'.
+- Lead with the answer: the first sentence is the takeaway (the number, the leader, the main gap), then the
+  caveat line, then the table or list, then at most two sentences of interpretation.
 - Comparison/ranking: a numbered table — rank, name/department, the 'sorted_by' metric, 1-2
-  supporting metrics.
-- Year stats: state the year(s) and count(s) clearly; for YoY, both years + growth %.
+  supporting metrics. Show EVERY row the tool returned, with every value filled in; never say
+  "top 20" and then show fewer.
+- The chat panel is narrow: a table has at most 5 columns. Comparing 2-4 things (campuses, schools, years) on
+  more than 3 measures: put the MEASURES down the first column and the things being compared across the top
+  (e.g. | Measure | Hubballi | Belagavi | Bengaluru |); choose the 5-7 measures that answer the question and
+  leave the rest out - offer them as a follow-up instead of adding columns.
+- Year stats: state the year(s) and count(s); for YoY, both years + growth %.
 
-MARKDOWN RULES (the reply is rendered as Markdown):
-- A table is only for comparisons/rankings. Write it as: a blank line, the header row, the separator row
-  (| --- | --- |), one row per line, then a blank line. Every row has the same number of cells; no bold or
-  line breaks inside cells; never put a table inside a bullet.
-- Use "- " bullets (one per line) for lists of metrics; put a blank line before and after a list.
-- A "Key Data Insights" style answer: one short intro sentence, then bullets, then the advice. Always finish
-  every sentence and every list you start; if space is short, give fewer points, never a cut-off one.
+MARKDOWN (the reply is rendered as Markdown):
+- A table only for comparisons/rankings: blank line, header row, separator row (| --- | --- |), one row per
+  line, blank line. Same number of cells in every row; no bold or line breaks in cells; never inside a bullet.
+- "- " bullets, one per line, with a blank line before and after a list.
+- Always finish every sentence and list you start; if space is short, give fewer points, never a cut-off one.
 - A Q-rank (Q1-Q4) is attached to ANY ranked publication, journal articles AND conference papers. Never say
-  the quartile counts belong to journals only, and make sure the Q1-Q4 counts do not add up to more than the
-  publications they describe. Say which index it is ("Scopus" by default).
+  the quartile counts belong to journals only; Q1-Q4 counts must not add up to more than the publications
+  they describe.
 
 Keep responses concise."""
+
+
+def build_ria_prompt(tool_names=None) -> str:
+    """The tool-routing system prompt. With `tool_names` (the tools this persona was given) only the
+    routing rules for those tools are included - a Faculty request no longer carries rules for
+    compare_entities, institute summaries, etc. that it can't call. None = every rule."""
+    allowed = None if tool_names is None else set(tool_names)
+    routing = "\n".join(text for tool, text in _ROUTING if allowed is None or tool in allowed)
+    conditional = "".join(text for tool, text in _CONDITIONAL_RULES.items() if allowed is None or tool in allowed)
+    absent = "" if allowed is None else "".join(text for tool, text in _ABSENT_RULES.items() if tool not in allowed)
+    rules = _PROMPT_RULES + conditional + absent
+    return _PROMPT_HEAD + routing + "\n" + rules + _PROMPT_FORMAT
+
+
+RIA_SYSTEM_PROMPT = build_ria_prompt()
+
+# General-concept questions ("what is h-index?") need no data tools: this replaces RIA_SYSTEM_PROMPT and the
+# tool schemas for that turn (about 5k tokens saved per call).
+CONCEPT_PROMPT = """You are RIA (Research Intelligence Agent) for KLE Technological University.
+This is a general question about an academic concept, not a request for KLE Tech data, so no data tools
+are available this turn. Explain it accurately and briefly (under ~200 words). Do NOT state any KLE Tech
+figure, ranking or faculty detail. End with one short offer to look up the KLE Tech figures.
+Your ROLE PERSONA's voice and tone still apply."""
 
 
 import re
@@ -2271,6 +2796,20 @@ def _parse_raw_fn_text(text: str):
         except json.JSONDecodeError:
             pass
     return None, None
+
+
+_NEVER_OVERRIDE = frozenset({
+    "compare_entities", "get_top_cited_publications", "get_citations_by_year", "get_department_benchmark",
+    "get_inactive_faculty", "get_author_concentration", "get_cross_department_collaboration",
+    "get_institute_summary", "get_top_journals", "get_campus_stats", "list_campus_publications",
+    "get_campus_top_authors",
+})
+_RANKING_RE = re.compile(
+    r"\b(most|least|which\s+(department|dept|school|institute|faculty)s?|per\s+(department|dept|school|faculty)|"
+    r"each\s+(department|dept|school)|by\s+(department|dept|school|institute)|(department|dept|school)[\s-]?wise|"
+    r"group(ed)?\s+by|grouped|rank(ed|ing)?|top|highest|lowest|best|worst|leaderboard|compare|comparison|vs|versus)\b",
+    re.IGNORECASE,
+)
 
 
 def _override_tool_choice(user_query: str, fn_name: str, fn_args: dict) -> tuple:
@@ -2299,6 +2838,20 @@ def _override_tool_choice(user_query: str, fn_name: str, fn_args: dict) -> tuple
     if fn_name in ("get_department_trend", "get_growth_acceleration"):
         return None, None
 
+    # Only a call the model made with NO arguments is a candidate for rerouting: any argument it
+    # chose (a department, a person, entity_type/metric) is information the swaps below would
+    # silently throw away. Tools that rank, compare, or are about one person/department are
+    # never swapped either.
+    if fn_args or fn_name in _NEVER_OVERRIDE:
+        return None, None
+
+    # Ranking / grouping questions need compare_entities, never a single count. Found in role
+    # testing: "which department published the most Q1 papers?" was rewritten to the
+    # university-wide Q1 count ("most" was not an exclusion), so L1 answered 1,329 and L2/L3
+    # ran out of rounds and fell back to "couldn't reliably answer".
+    if _RANKING_RE.search(q):
+        return None, None
+
     # Q-rank count queries -> count_qrank_publications
     qrank_match = re.search(r'\b(q[1-4])\b', q)
     if qrank_match:
@@ -2309,7 +2862,7 @@ def _override_tool_choice(user_query: str, fn_name: str, fn_args: dict) -> tuple
             if any(kw in q for kw in count_keywords):
                 qrank_val = qrank_match.group(1).upper()
                 new_args = {'qrank': qrank_val}
-                if re.search(r'(wos|web of science)', q):
+                if re.search(r'\b(wos|web of science)\b', q):
                     new_args['source'] = 'wos'
                 year_match = re.search(r'\b(20[12]\d)\b', q)
                 if year_match:
